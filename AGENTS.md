@@ -5,7 +5,7 @@ A powerful, all-purpose RAG (Retrieval-Augmented Generation) application built w
 ## Current stage
 
 - **Step 1 — Baseline** ✅ done: configuration, console logging, Ollama embeddings, LLM generation, naive index + query CLI.
-- **Step 2 — Multi-Format Ingestion** ⏭ next: `ingestion/` package with loaders, cleaning, and smart chunking.
+- **Step 2 — Multi-Format Ingestion** ⏭ in progress: 2.1 `ingestion/` package ✅ · 2.2 loaders (.txt/.md/.pdf) ✅ · 2.3 smart chunking ⏭ next · 2.4 cleaning.
 
 See [`.agents/roadmap.md`](.agents/roadmap.md) for the full staged plan.
 

@@ -28,22 +28,23 @@ Each step follows the template: **Goal / Scope / Done when**.
 
 **Goal:** ingest more than flat `.txt` files with clean, context-rich chunks. Replace the naive read-and-split in `app.index()` with a dedicated `ingestion/` package.
 
-### 2.1 — Create the `ingestion` package
+### 2.1 — Create the `ingestion` package ✅
 
 ```
 src/langchain_rag/ingestion/
-├── __init__.py
-├── loaders.py      # Files, PDFs, HTML, etc.
-├── cleaning.py     # Normalize extracted content
-└── chunking.py     # Chunking strategies
+├── __init__.py     # exports load_documents()
+├── loaders.py      # DocumentLoader base + txt/md/pdf loaders + registry
+├── cleaning.py     # stub (Step 2.4)
+└── chunking.py     # stub (Step 2.3)
 ```
 
-### 2.2 — Loaders
+### 2.2 — Loaders ✅
 
-- Build a **Loader base class**; derive type-related loader classes from it.
-- First loaders: `.txt`, `.md`, `.pdf`.
-- Each loader emits `Document`s with at least `metadata["source"]`; PDFs should carry page numbers where the library allows.
-- `app.index()` discovers files and dispatches to the right loader by type; unknown types are skipped with a warning (not a crash).
+- Build a **Loader base class**; derive type-related loader classes from it. ✅ `DocumentLoader` extends `langchain_core.document_loaders.base.BaseLoader` (ctor takes `path`, declares `supported_suffixes`, implements `supports()`; subclasses implement `lazy_load()`).
+- First loaders: `.txt`, `.md`, `.pdf`. ✅ `TextFileLoader`, `MarkdownLoader` (`.md`/`.markdown`, loaded as plain text for now), `PdfLoader` (raw `pypdf`, one Document per non-empty page with 0-based `page` metadata).
+- `app.index()` dispatches through `load_documents()` ✅; unknown types skipped with a warning ✅, per-file errors reported and skipped ✅.
+
+**Done:** verified 2026-10-29 — mixed txt/md/pdf (incl. uppercase suffixes) indexed end-to-end, PDF page metadata stored in Chroma and retrievable via `query`, corrupt/bad-encoding files skipped without aborting, double-index idempotent, zero-loadable run leaves old index intact with a warning.
 
 ### 2.3 — Smart chunking
 
@@ -65,7 +66,7 @@ src/langchain_rag/ingestion/
 - `architecture.md`, `configuration.md`, and `rag-decisions.md` updated for the new package and any new settings/decisions.
 
 **Known implications to handle during implementation:**
-- New dependency for PDF extraction (candidates: `pypdf` / `pypdfium2` / `langchain-pdf`-style loaders) — decide and record in `rag-decisions.md`.
+- ~~New dependency for PDF extraction~~ → resolved in 2.2: raw `pypdf`, recorded in [rag-decisions.md](rag-decisions.md).
 - Chunk settings may split into per-type settings once `chunking.py` lands — update `configuration.md` accordingly.
 
 ---

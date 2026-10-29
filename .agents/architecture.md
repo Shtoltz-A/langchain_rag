@@ -17,7 +17,12 @@ langchain_rag/
     ├── cli.py                 # Typer commands: index, query
     ├── app.py                 # Core logic: index(), answer()
     ├── config.py              # Settings (pydantic-settings) + get_settings()
-    └── console.py             # Console: colored, timestamped terminal output
+    ├── console.py             # Console: colored, timestamped terminal output
+    └── ingestion/             # File → Document pipeline (Step 2)
+        ├── __init__.py        # Exports load_documents()
+        ├── loaders.py         # DocumentLoader base + txt/md/pdf + registry
+        ├── cleaning.py        # stub — content normalization (Step 2.4)
+        └── chunking.py        # stub — per-type chunking (Step 2.3)
 ```
 
 ## Module responsibilities
@@ -29,10 +34,10 @@ langchain_rag/
 - **Rule:** command/argument parsing and user-facing flow live here; business logic never does.
 
 ### `app.py` — core RAG logic
-- `index(directory)`: reads files from a directory → splits into chunks → **resets** the collection → embeds and stores chunks in Chroma. Full rebuild, no incremental append.
+- `index(directory)`: loads documents via `ingestion.load_documents()` → splits into chunks → **resets** the collection → embeds and stores chunks in Chroma. Full rebuild, no incremental append.
 - `answer(question)`: similarity search (`top_k`) → joins chunks into a context block → truncates to `max_context_chars` → invokes the chat LLM with a system prompt that treats context as data, not instructions.
 - Owns the lazy `_get_vector_store()` singleton (Chroma, collection `"documents"`, persisted to `data/chroma/`) and a module-level `ChatOllama` instance.
-- **Planned (Step 2):** `index()` will delegate loading/cleaning/chunking to the `ingestion/` package instead of reading text files and splitting inline.
+- **Planned (Step 2.3):** chunking migrates from the inline splitter in `index()` to `ingestion/chunking.py`.
 
 ### `config.py` — settings
 - `Settings(BaseSettings)` with defaults, read once and cached by `get_settings()`; `.env` at project root overrides defaults, unknown keys ignored.
@@ -48,10 +53,14 @@ langchain_rag/
 INDEX                                     QUERY
 ─────                                     ─────
 data/raw/* files                          question (CLI arg)
-   │ read_text (utf-8, whole file)           │
+   │ ingestion.load_documents()              │
+   │  dispatch by suffix (case-insensitive): │
+   │  .txt/.md → whole file (utf-8)          │
+   │  .pdf → one Doc per non-empty page      │
    ▼                                         │
-Document(page_content, {source})             │
-   │                                         │
+Document(page_content, {source[, page]})     │
+   │  unknown types / broken files:          │
+   │  warned + skipped                      │
    ▼                                         ▼
 RecursiveCharacterTextSplitter           Chroma.similarity_search(k=top_k)
 (chunk_size/overlap in words)              │  Ollama embeddings embed the query
@@ -75,15 +84,9 @@ data/chroma/ persisted collection          │
 - Indexing is destructive by design: every `index` run replaces the whole collection (see [rag-decisions.md](rag-decisions.md)).
 - There is currently one collection (`"documents"`). Multi-collection support for "all-purpose" behavior is a future-stage concern, tracked in the roadmap backlog.
 
-## Planned structure after Step 2
+## Ingestion pipeline (Step 2)
 
-```
-src/langchain_rag/
-└── ingestion/
-    ├── __init__.py
-    ├── loaders.py     # Loader base class + type-specific loaders (.txt, .md, .pdf)
-    ├── cleaning.py    # Normalize extracted content
-    └── chunking.py    # Chunking strategies per content type (text vs code)
-```
-
-`app.index()` will call into `ingestion/` instead of doing file-reading and splitting itself.
+- `ingestion/loaders.py` defines `DocumentLoader` (extends LangChain `BaseLoader`): constructor takes a `Path`, `supported_suffixes` is a lowercase `frozenset`, subclasses implement `lazy_load()`.
+- `load_documents(directory)` iterates the top-level files (not recursive), dispatches via `get_loader()`/`SUPPORTED_LOADERS`, and consumes each loader **inside** a per-file `try` (lazy_load generators raise at consumption time), so broken files warn-and-skip instead of aborting the run.
+- PDFs yield one `Document` per non-empty page with 0-based `page` metadata (LangChain convention; format as `p.{page+1}` at display time).
+- `cleaning.py` and `chunking.py` are docstring-only stubs until Steps 2.4/2.3.

@@ -1,12 +1,12 @@
 from pathlib import Path
 
 from langchain_chroma import Chroma
-from langchain_core.documents import Document
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .config import get_settings
 from .console import Console
+from .ingestion import load_documents
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,14 +36,8 @@ def index(directory: Path) -> int:
         keep_separator=False,
     )
 
-    documents = []
-    for file in sorted(directory.iterdir()):
-        if not file.is_file():
-            continue
-        content = file.read_text(encoding="utf-8")
-        documents.append(
-            Document(page_content=content, metadata={"source": str(file)})
-        )
+    documents = load_documents(directory)
+    c.debug(f"Loaded {len(documents)} documents from {directory}")
 
     chunks = splitter.split_documents(documents)
     c.debug("Chunking is completed")
@@ -51,6 +45,7 @@ def index(directory: Path) -> int:
         c.debug_block(str(i), chunk.page_content)
 
     if not chunks:
+        c.warning("No loadable documents found; existing index left unchanged.")
         return 0
 
     vector_store = _get_vector_store()

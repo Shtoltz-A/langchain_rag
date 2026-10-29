@@ -54,15 +54,41 @@ Non-obvious design choices with their rationale, trade-offs, and conditions for 
 
 **Revisit when:** the "all-purpose" requirement demands separate knowledge domains → per-domain collections or metadata-based scoped retrieval. Tracked in roadmap backlog.
 
-## Whole-file `read_text` loading
+## Whole-file `read_text` loading — **Superseded (Step 2.2)**
 
-**Decision:** `index()` reads each file whole as UTF-8 text with a single `Document` per file.
+**Decision:** `index()` read each file whole as UTF-8 text with a single `Document` per file.
 
-**Why:** adequate for small `.txt` files at baseline; splitting is what produces chunks.
+**Superseded by:** the `ingestion/loaders.py` loader hierarchy (see next two entries). `.txt`/`.md` still load as one whole-file `Document`, but dispatch is by file type and PDFs are page-level; broken files no longer abort the run.
 
-**Trade-off:** breaks on binary/large files; no format awareness; memory-bound on huge files.
+## Raw `pypdf` over LangChain PDF loader wrappers
 
-**Superseded by plan:** Step 2 replaces this with the `ingestion/loaders.py` loader hierarchy (`.txt`, `.md`, `.pdf` first). Keep this entry until implemented, then move to *Superseded* pointing at the loader design entry added in Step 2.
+**Decision:** PDF text extraction uses `pypdf.PdfReader` directly inside our own `PdfLoader`, not `langchain-community`'s `PyPDFLoader` or the `langchain-pypdf` wrapper.
+
+**Why:** our loaders are a custom hierarchy by design (roadmap 2.2) built on `langchain_core.document_loaders.base.BaseLoader`; LangChain v1 moved concrete loaders into `langchain-community`, which would drag in a large dependency tree for one class. Raw `pypdf` is pure-Python, actively maintained, and gives direct page access for metadata.
+
+**Trade-off:** page→Document assembly and metadata conventions are ours to maintain (trivial here).
+
+**Revisit when:** HTML/DOCX/other formats arrive — if a good LangChain-native loader exists for them, weigh wrapping vs extending.
+
+## Per-page PDF document granularity
+
+**Decision:** `PdfLoader` emits one `Document` per non-empty page (`extract_text() or ""`, blank pages skipped), metadata `{"source", "page": 0-based int}`.
+
+**Why:** page is the natural retrieval/citation unit for PDFs; Step 2.4's context prefix (`[Doc: Policy.pdf p.12]`) and future citations need it. Splitter propagates metadata, so every chunk knows its page. 0-based follows the LangChain convention; display code formats `p.{page+1}`.
+
+**Trade-off:** page text is extracted without layout/reading-order awareness; scanned (image-only) PDFs produce no text and their pages vanish silently.
+
+**Revisit when:** layout-sensitive documents degrade retrieval (→ layout-aware extraction, e.g. pypdfium2-based or OCR for scanned PDFs — Step 2.4 cleaning may absorb part of this).
+
+## Per-file error tolerance during ingestion
+
+**Decision:** `load_documents()` catches any per-file exception (bad encoding, corrupt PDF, ...), reports it via `Console.error`, and continues with the next file; unknown suffixes are skipped with a warning.
+
+**Why:** ingestion runs over user-supplied directories; one broken file must not discard the whole run's work. Loaders are lazy generators, so consumption happens inside the guard deliberately.
+
+**Trade-off:** partial indexing can pass unnoticed — mitigated: `index()` warns "existing index left unchanged" when nothing loadable was found, and errors print per file.
+
+**Revisit when:** a summarizing "indexed N, skipped M" summary or a strict-mode flag becomes valuable.
 
 ## Local-only inference via Ollama
 

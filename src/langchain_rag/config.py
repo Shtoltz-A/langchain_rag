@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     )
 
     # Chunking settings
-    chunk_size_words: int = 220
-    chunk_overlap_words: int = 40
+    chunk_size_words: int = 500
+    chunk_overlap_words: int = 100
 
     # Retrieval settings
     top_k: int = 5

@@ -48,8 +48,8 @@ uv run app index --help
 
 ### Behavior notes
 
-- `index` **replaces** the whole collection on every run (reset + add). Indexing an empty directory leaves the store empty.
-- `index` reads every file in the directory as UTF-8 text; non-text/binary formats fail until Step 2 adds real loaders.
+- `index` **replaces** the whole collection on every run (reset + add). If nothing loadable is found, the run stops with a warning and the existing index stays untouched.
+- Supported input formats: `.txt`, `.md`/`.markdown`, `.pdf` (one chunk-source document per non-empty PDF page). Unknown file types and unreadable files (bad encoding, corrupt PDF) are reported and skipped, never fatal.
 - Both commands first check that Ollama is reachable and exit with a clear message if not.
 - Verbose diagnostics (chunk dumps, retrieved context) are controlled by the `Console(verbose=...)` flag inside `app.py` — there is no `--verbose` CLI flag yet.
 
@@ -70,4 +70,5 @@ uv run app query "What is in the test document?"
 | `Ollama is not reachable` | Start `ollama serve`; check `OLLAMA_HOST` |
 | Model-not-found error from Ollama | `ollama pull <model>` matching the setting name |
 | Answers claim nothing is indexed | Re-run `uv run app index` (store may have been reset or embedding model changed) |
-| `UnicodeDecodeError` during index | File is not UTF-8 text — remove/convert it (real loaders arrive in Step 2) |
+| `Failed to load <file>` during index | File skipped on purpose (bad encoding, corrupt PDF); other files still indexed |
+| `UnicodeEncodeError` (`charmap`) when piping output | Known console issue: box-drawing characters fail when stdout is redirected (cp1252). Run in a normal terminal or set `$env:PYTHONIOENCODING='utf-8'` |
