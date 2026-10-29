@@ -49,9 +49,15 @@ uv run app index --help
 ### Behavior notes
 
 - `index` **replaces** the whole collection on every run (reset + add). If nothing loadable is found, the run stops with a warning and the existing index stays untouched.
-- Supported input formats: `.txt`, `.md`/`.markdown`, `.pdf` (one chunk-source document per non-empty PDF page). Unknown file types and unreadable files (bad encoding, corrupt PDF) are reported and skipped, never fatal.
+- Supported input formats: `.txt`, `.md`/`.markdown`, `.pdf` (one chunk-source document per non-empty PDF page), `.py`, `.json` (validated at load). Unknown file types and unreadable files (bad encoding, corrupt PDF, malformed JSON) are reported and skipped, never fatal.
 - Both commands first check that Ollama is reachable and exit with a clear message if not.
-- Verbose diagnostics (chunk dumps, retrieved context) are controlled by the `Console(verbose=...)` flag inside `app.py` — there is no `--verbose` CLI flag yet.
+- Verbose diagnostics (chunk dumps with metadata, retrieved context) are controlled by the `Console(verbose=...)` flag inside `app.py` — there is no `--verbose` CLI flag yet.
+
+## Tests
+
+```powershell
+uv run pytest                     # unit tests (tests/): chunking + loaders, no Ollama needed
+```
 
 ## Quick smoke test
 

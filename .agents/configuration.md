@@ -8,10 +8,18 @@ All runtime settings live in `src/langchain_rag/config.py` as a single pydantic-
 |---|---|---|---|
 | `OLLAMA_LLM_MODEL` | `str` | `llama3.2` | Chat model used for generation (must be pulled in Ollama) |
 | `OLLAMA_EMBEDDING_MODEL` | `str` | `embeddinggemma` | Embedding model used for indexing and query embedding |
-| `chunk_size_words` | `int` | `500` | Chunk size for the text splitter, in words |
-| `chunk_overlap_words` | `int` | `100` | Overlap between consecutive chunks, in words |
+| `chunk_size_text_words` | `int` | `300` | Chunk size for plain-text documents, in words |
+| `chunk_overlap_text_words` | `int` | `50` | Chunk overlap for plain text, in words |
+| `chunk_size_markdown_words` | `int` | `300` | Chunk size for Markdown sections, in words |
+| `chunk_overlap_markdown_words` | `int` | `50` | Chunk overlap within oversized Markdown sections, in words |
+| `chunk_size_pdf_words` | `int` | `300` | Chunk size per PDF page, in words |
+| `chunk_overlap_pdf_words` | `int` | `50` | Chunk overlap per PDF page, in words |
+| `chunk_size_code_words` | `int` | `400` | Chunk size for source code, in words |
+| `chunk_overlap_code_words` | `int` | `100` | Chunk overlap for source code, in words |
+| `chunk_size_json_words` | `int` | `400` | Size cap for a JSON top-level-key chunk, in words |
 | `top_k` | `int` | `5` | Number of chunks retrieved per query |
 | `max_context_chars` | `int` | `12000` | Hard cap on the assembled context string before prompting |
+| `cleaning_enabled` | `bool` | `true` | Master switch for `ingestion/cleaning.py` (normalize + context prefixes); when `false` both stages pass documents through unchanged |
 
 ## Precedence
 
@@ -41,4 +49,4 @@ _settings = get_settings()   # cached with lru_cache(maxsize=1)
 
 - Model names must match what Ollama actually has pulled (`ollama list`). The CLI checks connectivity but not model availability.
 - Changing `OLLAMA_EMBEDDING_MODEL` invalidates the existing index: stored vectors were produced by the old model. Always re-run `app index` after changing it.
-- Chunking settings are word-based (`length_function` defaults to `len`, so values approximate tokens). Step 2 will move chunking into `ingestion/chunking.py`; settings will be extended there rather than replaced silently.
+- Chunk settings are genuinely **word-based** since Step 2.3 (`length_function=len(text.split())`). Before 2.3 the `chunk_size_words=500` setting was misnamed — `length_function` defaulted to `len` (characters), so effective chunks were ~500 chars. The old `chunk_size_words`/`chunk_overlap_words` keys no longer exist; if they linger in a local `.env` they are silently ignored (`extra="ignore"`) — replace them with the per-type fields above.

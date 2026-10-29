@@ -2,11 +2,15 @@ from pathlib import Path
 
 from langchain_chroma import Chroma
 from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .config import get_settings
 from .console import Console
-from .ingestion import load_documents
+from .ingestion import (
+    apply_context_prefixes,
+    load_documents,
+    normalize_documents,
+    split_documents,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -30,19 +34,17 @@ def _get_vector_store() -> Chroma:
 
 def index(directory: Path) -> int:
     """Replace the index with documents from the directory."""
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=_settings.chunk_size_words,
-        chunk_overlap=_settings.chunk_overlap_words,
-        keep_separator=False,
-    )
-
     documents = load_documents(directory)
     c.debug(f"Loaded {len(documents)} documents from {directory}")
 
-    chunks = splitter.split_documents(documents)
+    documents = normalize_documents(documents)
+    c.debug("Normalization is completed")
+
+    chunks = split_documents(documents)
+    chunks = apply_context_prefixes(chunks)
     c.debug("Chunking is completed")
     for i, chunk in enumerate(chunks):
-        c.debug_block(str(i), chunk.page_content)
+        c.debug_block(f"{i} | {chunk.metadata}", chunk.page_content)
 
     if not chunks:
         c.warning("No loadable documents found; existing index left unchanged.")
