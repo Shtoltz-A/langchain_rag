@@ -13,3 +13,4 @@ wheels/
 data/raw
 data/chroma
 data/test_data
+data/index_manifest.json

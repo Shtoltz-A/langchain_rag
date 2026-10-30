@@ -2,7 +2,8 @@
 
 Defines a DocumentLoader base class and one subclass per supported file
 type. Use load_documents() to load a whole directory with per-file error
-tolerance; unknown file types are skipped with a warning.
+tolerance; unknown file types are skipped with a warning. Use
+iter_supported_files() to enumerate loadable files without loading content.
 """
 
 from __future__ import annotations
@@ -87,7 +88,8 @@ class TextFileLoader(DocumentLoader):
 class MarkdownLoader(DocumentLoader):
     """Load a Markdown file as a single document.
 
-    Content is kept as-is; structure-aware chunking arrives in Step 2.3.
+    Content is kept as-is; structure-aware chunking is applied later by
+    ``chunking.py``.
     """
 
     supported_suffixes = frozenset({".md", ".markdown"})
@@ -161,6 +163,36 @@ def get_loader(path: Path) -> type[DocumentLoader] | None:
     return None
 
 
+def _walk(directory: Path) -> Iterator[tuple[Path, type[DocumentLoader] | None]]:
+    """Yield ``(file, loader_class_or_None)`` for every visible file.
+
+    Walk rules shared by load_documents() and iter_supported_files():
+    sorted recursive scan, files only, hidden paths (any component starting
+    with ``.``, e.g. ``.git/``) skipped. A ``None`` loader means the suffix
+    maps to no registered DocumentLoader.
+    """
+    for file in sorted(directory.rglob("*")):
+        if not file.is_file() or _is_hidden(file, directory):
+            continue
+        yield file, get_loader(file)
+
+
+def iter_supported_files(directory: Path) -> list[Path]:
+    """Sorted list of supported, non-hidden files under ``directory`` (recursive).
+
+    Args:
+        directory: Root directory; subdirectories are walked to any depth.
+
+    Use cases:
+        - Incremental indexing: enumerate candidate files to hash/compare
+          against the manifest without loading any content.
+
+    Unsupported files are skipped silently — the warning belongs to
+    load_documents(), which batch callers still use.
+    """
+    return [file for file, loader in _walk(directory) if loader is not None]
+
+
 def load_documents(directory: Path) -> list[Document]:
     """Load all supported files under the directory into documents (recursive).
 
@@ -180,10 +212,7 @@ def load_documents(directory: Path) -> list[Document]:
     ``directory``) metadata.
     """
     documents: list[Document] = []
-    for file in sorted(directory.rglob("*")):
-        if not file.is_file() or _is_hidden(file, directory):
-            continue
-        loader = get_loader(file)
+    for file, loader in _walk(directory):
         if loader is None:
             c.warning(f"Unsupported file type, skipping: {file.relative_to(directory)}")
             continue

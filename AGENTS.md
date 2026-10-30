@@ -5,7 +5,9 @@ A powerful, all-purpose RAG (Retrieval-Augmented Generation) application built w
 ## Current stage
 
 - **Step 1 — Baseline** ✅ done: configuration, console logging, Ollama embeddings, LLM generation, naive index + query CLI.
-- **Step 2 — Multi-Format Ingestion** ⏭ in progress: 2.1 `ingestion/` package ✅ · 2.2 loaders ✅ · 2.3 smart chunking ✅ · 2.4 cleaning ✅ · 2.5 contextual retrieval ⬜ next.
+- **Step 2 — Multi-Format Ingestion** ✅ done: loaders, smart chunking, cleaning + context prefixes (2.1–2.4). Contextual retrieval renumbered to Step 4.
+- **Step 3 — Storage Layer & Incremental Indexing** ✅ done: `storage/` package, manifest-driven incremental indexing (only changed files re-embedded), multi-root indexing (3.1).
+- **Step 4 — Contextual Retrieval** ⬜ next: per-chunk LLM summaries before embedding.
 
 See [`.agents/roadmap.md`](.agents/roadmap.md) for the full staged plan.
 
@@ -15,7 +17,8 @@ See [`.agents/roadmap.md`](.agents/roadmap.md) for the full staged plan.
 |---|---|
 | Language / runtime | Python 3.12, managed with `uv` |
 | LLM & embeddings | Ollama (`langchain-ollama`) — local models |
-| Vector store | Chroma, persisted at `data/chroma/` (`langchain-chroma`) |
+| Vector store | Chroma, persisted at `data/chroma/` (`langchain-chroma`), behind `storage/vectorstore.py` |
+| Incremental indexing | Multi-root content-hash manifest at `data/index_manifest.json` (`storage/manifest.py`, since Step 3/3.1) |
 | Splitting | `ingestion/chunking.py` (per-type strategies, since Step 2.3); `langchain-text-splitters` used as building blocks |
 | CLI | Typer (entry point: `app`) |
 | Settings | pydantic-settings + `.env` |

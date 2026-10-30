@@ -1,108 +1,74 @@
 # Architecture
 
-Module responsibilities, data flow, and directory layout. Keep this file updated when structure changes.
+Module responsibilities, data flow, and directory layout. Keep updated when structure changes; *why* behind choices lives in [rag-decisions.md](rag-decisions.md).
 
 ## Directory layout
 
 ```
 langchain_rag/
-├── AGENTS.md                  # Hub: mission, stage, docs map, always-on rules
+├── AGENTS.md                  # Hub: stage, docs map, always-on rules
 ├── .agents/                   # Detailed documentation (this directory)
-├── pyproject.toml             # uv project: deps, `app` console script, uv_build backend
-├── .env                       # Local overrides for settings (git-ignored)
+├── .env                       # Local settings overrides (git-ignored)
 ├── data/
 │   ├── raw/                   # Input documents to index
-│   └── chroma/                # Persisted Chroma collection(s)
+│   ├── chroma/                # Persisted Chroma collection
+│   └── index_manifest.json    # Tracked sources + content hashes (incremental index)
+├── tests/                     # Unit tests (project root, outside src/)
 └── src/langchain_rag/
-    ├── cli.py                 # Typer commands: index, query
-    ├── app.py                 # Core logic: index(), answer()
+    ├── cli.py                 # Typer commands: index (--clear teardown), query
+    ├── app.py                 # Core logic: index(), clear_index(), answer()
     ├── config.py              # Settings (pydantic-settings) + get_settings()
     ├── console.py             # Console: colored, timestamped terminal output
-    └── ingestion/             # File → Document pipeline (Step 2)
-        ├── __init__.py        # Exports load/normalize/split/prefix functions
-        ├── loaders.py         # DocumentLoader base + txt/md/pdf/py/json + registry
-        ├── cleaning.py        # normalize_documents() + apply_context_prefixes()
-        └── chunking.py        # ChunkingStrategy base + per-type strategies
+    ├── ingestion/             # File → Documents pipeline (Step 2)
+    │   ├── __init__.py        # load/normalize/split/prefix + process_file
+    │   ├── loaders.py         # DocumentLoader base + txt/md/pdf/py/json + registry
+    │   ├── cleaning.py        # normalize_documents() + apply_context_prefixes()
+    │   └── chunking.py        # ChunkingStrategy base + per-type strategies
+    └── storage/               # Persistence layer (Step 3)
+        ├── vectorstore.py     # VectorStore singleton class (Chroma + embeddings)
+        └── manifest.py        # Multi-root manifest: hashes, fingerprint, diff (pure)
 ```
-
-> Tests live at the **project root** `tests/` (not inside `src/`); the tree above is the `src/langchain_rag/` package only.
 
 ## Module responsibilities
 
-### `cli.py` — the only UI layer
-- Defines the Typer app and commands (`index`, `query`); exposed as the `app` console script.
-- Checks prerequisites before doing work (`_ensure_ollama_running()` pings the Ollama API).
-- Reports results through `Console` and delegates all real work to `app.py`.
-- **Rule:** command/argument parsing and user-facing flow live here; business logic never does.
+- **`cli.py`** — the only UI layer: Typer commands, prerequisite checks (`_ensure_ollama_running()`), reporting via `Console`. Business logic never lives here (rule 6).
+- **`app.py`** — `index(directory)`: `directory.resolve()` + `root_key()` (normcase) is the canonical root — manifest root keys, Chroma `source` metadata, and delete filters must all share this form. A never-seen directory is *added* alongside other roots' vectors; a tracked one updates via sha256 diff scoped to its own manifest records (→ delete stale vectors → `process_file()` + re-embed added/changed → skip unchanged). Only a whole-store wipe (no usable manifest / fingerprint change / manifest-vs-store count mismatch) clears the collection first, warning about dropped roots; overlapping roots raise `ValueError` (CLI: error + exit 1). Returns `IndexResult`.
+  `clear_index()` is the deliberate teardown entry (CLI: `index --clear`): `store.clear()` then `delete_manifest()` — collection gone, manifest file deleted, nothing indexed; either crash order self-heals via the count-mismatch / no-manifest rebuild gates. Returns the removed-chunk count.
+  `answer(question)`: `top_k` search → context joined and capped at `max_context_chars` → LLM with anti-injection system prompt.
+- **`storage/vectorstore.py`** — only seam to `langchain_chroma`/`OllamaEmbeddings`. `VectorStore` process singleton (`__new__` memoizes; Chroma handle built on first instantiation — never instantiate at module level so imports stay disk-free). Methods `clear` / `add_documents` / `delete_by_source` / `search` / `count`; `chroma` property is the escape hatch.
+- **`storage/manifest.py`** — pure (stdlib + settings): manifest grouping source records under normcase `roots` keys; `compute_fingerprint()` (global: pipeline version + embedding model + `chunk_*`/cleaning settings), `hash_file()` (SHA-256), atomic `load_manifest()`/`save_manifest()` (no schema version by design — structure is the contract: corrupt or unrecognized → `None` → whole-store rebuild; format changes handled by wiping, no migration code), `delete_manifest()` (tolerant unlink, used by the `--clear` teardown), `diff()` (one root's records), `matches()` (fingerprint only), `root_key()` / `overlapping_root()`.
+- **`config.py`** — `Settings` read once via cached `get_settings()`; see [configuration.md](configuration.md).
+- **`console.py`** — all terminal output; warning/error → stderr, debug only in verbose mode.
 
-### `app.py` — core RAG logic
-- `index(directory)`: loads documents via `ingestion.load_documents()` → normalizes via `ingestion.normalize_documents()` → chunks via `ingestion.split_documents()` → prefixes via `ingestion.apply_context_prefixes()` → **resets** the collection → embeds and stores chunks in Chroma. Full rebuild, no incremental append.
-- `answer(question)`: similarity search (`top_k`) → joins chunks into a context block → truncates to `max_context_chars` → invokes the chat LLM with a system prompt that treats context as data, not instructions.
-- Owns the lazy `_get_vector_store()` singleton (Chroma, collection `"documents"`, persisted to `data/chroma/`) and a module-level `ChatOllama` instance.
-
-### `config.py` — settings
-- `Settings(BaseSettings)` with defaults, read once and cached by `get_settings()`; `.env` at project root overrides defaults, unknown keys ignored.
-- See [configuration.md](configuration.md) for the full list of settings.
-
-### `console.py` — output
-- `Console` class: timestamped, level-colored messages (`info/warning/success/error/debug`), headings (`banner/section`), bordered multiline output (`block/debug_block`) with truncation unless verbose.
-- `WARNING`/`ERROR` go to stderr; `DEBUG` output only in verbose mode.
-
-## Data flow (current, Step 1)
+## Data flow
 
 ```
-INDEX                                     QUERY
-─────                                     ─────
-data/raw/* files                          question (CLI arg)
-   │ ingestion.load_documents()              │
-   │  recursive walk, hidden paths skipped;  │
-   │  dispatch by suffix (case-insensitive): │
-   │  .txt/.md/.py/.json → whole file        │
-   │  .pdf → one Doc per non-empty page      │
-   ▼                                         │
-Document(page_content,                       │
-  {source, relative_path[, page]})           │
-   │  unknown types / broken files:          │
-   │  warned + skipped                      │
-   ▼                                         │
-ingestion.normalize_documents()              │
-   │  blank-run/trailing-ws trim (all);      │
-   │  hyphenation + header/footer dedup (pdf)│
-   ▼                                         │
-ingestion.split_documents()              Chroma.similarity_search(k=top_k)
-   │ per-type ChunkingStrategy,             │  Ollama embeddings embed the query
-   │ routed by source suffix:               ▼
-   │  md → fence-aware sections (h1–h3)   context = "\n\n".join(chunks)
-   │  txt/pdf → recursive (words)           │ truncated to max_context_chars
-   │  py → PYTHON from_language             ▼
-   │  json → per top-level key            messages = [system, human(context, question)]
-   ▼                                         │
-ingestion.apply_context_prefixes()           ▼
-   │ prepend "[File…]/[Doc…]" line        ChatOllama.invoke()
-   ▼                                         │
-Chroma.reset_collection()                    ▼
-   │ add_documents(chunks)                answer printed via Console
-   ▼
-data/chroma/ persisted collection
+INDEX:  data/raw/* ──load_documents()──▶ Documents ──normalize_documents()──▶
+        split_documents() ──apply_context_prefixes()──▶ chunks
+        ──manifest gate──▶ whole-store wipe (clear collection + every root's records)
+                        └▶ per-root update: sha256 diff on this root's files only —
+                           added/changed: delete_by_source + process_file + add
+                           deleted: delete_by_source · unchanged: skipped
+        ▶ data/chroma/ (all roots in one collection) + data/index_manifest.json (roots-keyed)
+
+QUERY:  question ─▶ VectorStore.search(top_k) ─▶ context (capped) ─▶ ChatOllama ─▶ answer
+
+CLEAR:  index --clear ─▶ clear_index(): store.clear() + delete_manifest() ─▶ exit (nothing indexed)
 ```
+
+## Ingestion contracts
+
+- **Per-file tolerance everywhere:** broken or unknown files are reported (`Console.error`) and skipped, never fatal — `load_documents()`, `process_file()`, and `split_documents()` all follow this. A whole-store wipe clears the collection before scanning, so a run that loads nothing afterwards leaves the index empty.
+- **Chunk metadata contract:** every chunk carries `source` (full path) and `relative_path` (POSIX, relative to index root); PDF adds `page` (0-based int), Markdown adds `h1`–`h3`, JSON adds `json_key`. Values are always strings/ints — Chroma rejects lists/None.
+- **Cleaning** (`cleaning_enabled` gate; pure, input never mutated): `normalize_documents()` before chunking (blank-run/trailing-ws/CRLF all types; PDF-only hyphenation rejoin + header/footer dedup), `apply_context_prefixes()` after chunking (idempotent `[File: …]` / `[Doc: … p.N]` provenance line prepended to `page_content`).
+- **Per-file entry points** (for incremental indexing): `iter_supported_files(directory)` (same walk rules as `load_documents()`, unsupported files excluded silently); `process_file(path, root)` = load → normalize → split → prefix for one file, chunk-for-chunk parity with the batch chain (parity-tested).
 
 ## Key structural facts
 
-- Chroma persist path is derived from `PROJECT_ROOT` (`src/langchain_rag/../..`), so commands work from any CWD.
-- The vector store is a lazily-created module singleton; embeddings model comes from settings.
-- Indexing is destructive by design: every `index` run replaces the whole collection (see [rag-decisions.md](rag-decisions.md)).
-- There is currently one collection (`"documents"`). Multi-collection support for "all-purpose" behavior is a future-stage concern, tracked in the roadmap backlog.
-
-## Ingestion pipeline (Step 2)
-
-- `ingestion/loaders.py` defines `DocumentLoader` (extends LangChain `BaseLoader`): constructor takes a `Path`, `supported_suffixes` is a lowercase `frozenset`, subclasses implement `lazy_load()`.
-- `load_documents(directory)` walks the tree recursively (`rglob`), skipping hidden paths (any component starting with `.`), dispatches via `get_loader()`/`SUPPORTED_LOADERS`, and consumes each loader **inside** a per-file `try` (lazy_load generators raise at consumption time), so broken files warn-and-skip instead of aborting the run.
-- PDFs yield one `Document` per non-empty page with 0-based `page` metadata (LangChain convention; format as `p.{page+1}` at display time). `.json` files are validated with `json.loads` at load time; malformed ones are skipped per the same tolerance rule.
-- `ingestion/chunking.py` mirrors the loader pattern: `ChunkingStrategy` base (`supported_suffixes`/`supports()`), `CHUNKING_STRATEGIES` tuple, `get_chunker(path)` lookup with `TextChunker` fallback. `split_documents()` groups documents by `metadata["source"]` suffix, chunks each group per type, and guards each group with try/except (`Console.error` + skip; zero-chunk groups warned).
-- Chunk metadata contract: every chunk carries `source` (full path) and `relative_path` (POSIX path relative to the index root, e.g. `pdf/report.pdf`); PDF chunks add `page`; Markdown chunks add `h1`–`h3` (heading line stays in content too); JSON chunks add `json_key`. Values are always strings/ints (Chroma rejects lists/None).
-- `ingestion/cleaning.py` runs two pure stages: `normalize_documents()` **before** chunking (blank-line collapse + per-line trailing-whitespace trim + CRLF normalization for all types; PDF-only hyphenation rejoin and header/footer dedup, detected on post-hyphen text) and `apply_context_prefixes()` **after** chunking (a `[File: …]` / `[Doc: … p.N]` provenance line prepended to `page_content`, idempotent, metadata preserved; the file part includes the folder trail from `relative_path`, e.g. `[Doc: pdf/report.pdf p.12]`). Both are no-ops when `cleaning_enabled=False`, and neither mutates its input documents.
-- `cleaning.py` implements Step 2.4 (normalize + context prefixes). Contextual retrieval (LLM per-chunk summaries) is deferred to Step 2.5.
+- All paths derive from `PROJECT_ROOT`; commands work from any CWD.
+- Indexing is **incremental by design** — unchanged files are skipped by content hash, diffed per root (triggers + rationale: [rag-decisions.md](rag-decisions.md)).
+- One Chroma collection (`"documents"`) shared by all index roots (per-root manifest sections keep their records separate); multi-collection scoping is roadmap backlog.
 
 ## Testing
 
-- Unit tests live in `tests/` (run with `uv run pytest`), cover pure logic only (chunking strategies, cleaning passes, loaders with `tmp_path`) — no Ollama or Chroma access. Dev dependency: `pytest` (`[dependency-groups] dev`).
+`tests/` (run `uv run pytest`) covers pure logic only: chunking, cleaning, loaders (`tmp_path`), manifest hashing/diff/fingerprint, `VectorStore` singleton via fakes — never touches real Ollama or Chroma.

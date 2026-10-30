@@ -11,7 +11,7 @@ Two pure, unit-testable stages wrap the loader→chunking pipeline:
 
 Neither mutates its input Documents; both return new lists. Contextual
 retrieval (LLM per-chunk summaries) is deliberately out of scope here
-(roadmap Step 2.5).
+(roadmap Step 4).
 """
 
 from __future__ import annotations

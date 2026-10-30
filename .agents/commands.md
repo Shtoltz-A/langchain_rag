@@ -1,80 +1,44 @@
 # Commands
 
-Everything needed to run, index, and query. Run all commands from the project root unless noted.
+Run everything from the project root. Windows note: when piping CLI output, set `$env:PYTHONIOENCODING='utf-8'` first (box-drawing chars fail on cp1252).
 
-## Prerequisites
+## Prerequisites & setup
 
-- Python 3.12 (pinned via `.python-version`), [`uv`](https://docs.astral.sh/uv/) installed.
-- [Ollama](https://ollama.com) running locally:
-
-```powershell
-ollama serve                      # if not already running as a service
-ollama pull llama3.2              # chat model  (OLLAMA_LLM_MODEL)
-ollama pull embeddinggemma        # embedding model (OLLAMA_EMBEDDING_MODEL)
-ollama list                       # verify
-```
-
-## Setup
+Python 3.12 (`uv`-managed) and Ollama running locally with the models from `configuration.md`:
 
 ```powershell
+ollama serve                      # if not already a service
+ollama pull llama3.2              # OLLAMA_LLM_MODEL
+ollama pull embeddinggemma        # OLLAMA_EMBEDDING_MODEL
 uv sync                           # create/refresh .venv from uv.lock
 ```
 
-## Add a dependency
-
-```powershell
-uv add <package>                  # runtime dependency
-uv add --dev <package>            # development-only dependency
-```
-
-Never `pip install` directly; commit the updated `pyproject.toml` and `uv.lock` together.
+Dependencies: `uv add <pkg>` / `uv add --dev <pkg>` only — never `pip install`; commit `pyproject.toml` + `uv.lock` together.
 
 ## Usage
 
-The Typer app is exposed as the console script `app` (see `[project.scripts]`).
+The Typer app is exposed as the console script `app`.
 
 ```powershell
-# Index documents (default directory: data/raw)
-uv run app index
-uv run app index --directory path/to/docs     # or -d
-
-# Ask a question against the index
+uv run app index                              # incremental: re-embeds only new/changed files
+uv run app index -d path/to/docs              # add this folder to the index (other folders untouched)
+uv run app index --clear                      # delete ALL indexed data (vector store + manifest file) and exit — nothing is indexed, -d ignored
 uv run app query "What does the policy say about X?"
-
-# Help
 uv run app --help
-uv run app index --help
+uv run pytest                                 # unit tests — no Ollama/Chroma needed
 ```
 
-### Behavior notes
+## Behavior notes
 
-- `index` **replaces** the whole collection on every run (reset + add). If nothing loadable is found, the run stops with a warning and the existing index stays untouched.
-- Supported input formats: `.txt`, `.md`/`.markdown`, `.pdf` (one chunk-source document per non-empty PDF page), `.py`, `.json` (validated at load). Unknown file types and unreadable files (bad encoding, corrupt PDF, malformed JSON) are reported and skipped, never fatal.
-- Both commands first check that Ollama is reachable and exit with a clear message if not.
-- Verbose diagnostics (chunk dumps with metadata, retrieved context) are controlled by the `Console(verbose=...)` flag inside `app.py` — there is no `--verbose` CLI flag yet.
-
-## Tests
-
-```powershell
-uv run pytest                     # unit tests (tests/): chunking + loaders, no Ollama needed
-```
-
-## Quick smoke test
-
-```powershell
-# 1. Put a .txt file into data/raw
-# 2. Index it
-uv run app index
-# 3. Query something only that file knows
-uv run app query "What is in the test document?"
-```
+- **Incremental `index`** (Steps 3/3.1): diffs per-file SHA-256 against `data/index_manifest.json`; deleted files' vectors are purged. Indexing different `-d` folders repeatedly accumulates one combined index — a new folder is *added*, tracked folders diff only their own records; a folder nested inside (or around) an already-indexed root errors out, index the outer folder instead. Whole-store rebuild (wipes **every** indexed folder) on missing/unusable manifest, fingerprint change (embedding model, chunking/cleaning settings, pipeline version), or manifest-vs-store count disagreement. `--clear` is a separate pure teardown, not a rebuild trigger: it deletes ALL indexed data (vector store + manifest file) and exits without indexing; the next plain `index` starts from scratch on whatever `-d` folder you give it. Formats: `.txt` `.md` `.markdown` `.pdf` `.py` `.json`; unknown/broken files are reported and skipped, never fatal. Both commands exit early with a clear message if Ollama is unreachable. Verbose chunk/context dumps are behind `Console(verbose=...)` in `app.py` (no CLI flag yet).
+- Quick smoke test: put a `.txt` in `data/raw` → `uv run app index` → `uv run app query "what's in the test doc?"`.
 
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
 | `Ollama is not reachable` | Start `ollama serve`; check `OLLAMA_HOST` |
-| Model-not-found error from Ollama | `ollama pull <model>` matching the setting name |
-| Answers claim nothing is indexed | Re-run `uv run app index` (store may have been reset or embedding model changed) |
-| `Failed to load <file>` during index | File skipped on purpose (bad encoding, corrupt PDF); other files still indexed |
-| `UnicodeEncodeError` (`charmap`) when piping output | Known console issue: box-drawing characters fail when stdout is redirected (cp1252). Run in a normal terminal or set `$env:PYTHONIOENCODING='utf-8'` |
+| Model-not-found from Ollama | `ollama pull <model>` matching the setting name |
+| Answers claim nothing is indexed | Re-run `uv run app index` — wiped store or changed model triggers an auto whole-store wipe (debug line `Whole-index rebuild: <reason>`); afterwards re-index **every** folder again, the other roots were dropped |
+| `Failed to load <file>` during index | Skipped on purpose (bad encoding, corrupt PDF); other files still indexed |
+| `UnicodeEncodeError` (`charmap`) when piping output | Set `$env:PYTHONIOENCODING='utf-8'` or run in a normal terminal |
