@@ -2,37 +2,16 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from ollama import Client, RequestError, ResponseError
 
-from .app import (
-    answer as answer_question,
-)
-from .app import (
-    clear_index,
-)
-from .app import (
-    index as index_documents,
-)
 from .config import PROJECT_ROOT
 from .console import get_console
+from .errors import OllamaUnavailableError, RagError
+from .services import answer as answer_question
+from .services import clear_index, ensure_ollama_running
+from .services import index as index_documents
 
 app = typer.Typer(help="Index documents and query them with RAG.")
 c = get_console()
-
-
-def _ensure_ollama_running() -> None:
-    """Abort the run unless the Ollama daemon answers ``list``.
-
-    Covers more than a refused connection: ``ResponseError``/``RequestError``
-    surface a daemon that is up but erroring, so both end the run with a
-    Console error instead of a raw traceback.
-    """
-    try:
-        Client().list()
-    except (ConnectionError, RequestError, ResponseError) as exc:
-        c.error("Ollama is not reachable. Start it with `ollama serve`.")
-        c.debug(f"Ollama client error: {exc}")
-        raise typer.Exit(code=1)
 
 
 @app.callback()
@@ -54,6 +33,20 @@ def main(
     """
     if verbose is not None:
         get_console().verbose = verbose
+
+
+def _require_ollama() -> None:
+    """Exit this run with a readable message unless Ollama answers.
+
+    The check itself lives in ``services/health.py`` and raises; translating
+    that into terminal output plus an exit code is this layer's job (rule 6).
+    """
+    try:
+        ensure_ollama_running()
+    except OllamaUnavailableError as exc:
+        c.error(str(exc))
+        c.debug(f"Ollama client error: {exc.__cause__}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -78,7 +71,7 @@ def index(
     if not clear and not directory.exists():
         c.error(f"Directory '{directory}' does not exist.")
         raise typer.Exit(code=1)
-    _ensure_ollama_running()
+    _require_ollama()
     if clear:
         result = clear_index()
         pruned = (
@@ -93,7 +86,11 @@ def index(
         return
     try:
         result = index_documents(directory)
-    except ValueError as exc:
+    except (RagError, ValueError) as exc:
+        # RagError = the app's own verdict on the run (a misconfigured .env for
+        # the contextual summarizer); ValueError = validation that refused the
+        # root or a chunking setting. Both are the user's to fix, so both end
+        # the run with this one line instead of a traceback.
         c.error(str(exc))
         raise typer.Exit(code=1)
     c.log(
@@ -108,12 +105,13 @@ def query(
     question: str = typer.Argument(..., help="Question to answer."),
 ) -> None:
     """Answer a question using the persisted index."""
-    _ensure_ollama_running()
+    _require_ollama()
     try:
         answer = answer_question(question)
-    except ValueError as exc:
+    except (RagError, ValueError) as exc:
         # LLM/provider misconfiguration (unknown provider, missing gateway
-        # settings) ends the run cleanly, the same way `index` handles it.
+        # settings) and an unknown retrieval mode end the run cleanly, the same
+        # way `index` handles it.
         c.error(str(exc))
         raise typer.Exit(code=1)
     c.success(answer)

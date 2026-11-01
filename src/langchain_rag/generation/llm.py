@@ -24,6 +24,7 @@ from pydantic import SecretStr
 
 from ..config import Settings, fallback_chat_model, get_settings
 from ..console import get_console
+from ..errors import ConfigurationError
 
 c = get_console()
 
@@ -42,7 +43,9 @@ def resolve_model(provider: Provider, override: str | None, settings: Settings) 
         return override
     model = fallback_chat_model(provider, settings)
     if provider == "openai" and not model:
-        raise ValueError("openai provider needs a model: set OPENAI_MODEL in .env")
+        raise ConfigurationError(
+            "openai provider needs a model: set OPENAI_MODEL in .env"
+        )
     return model
 
 
@@ -70,8 +73,9 @@ def build_chat_model(
     apply to the openai provider only.
 
     Raises:
-        ValueError: unknown provider — a misconfiguration fails loudly, not
-            silently reroutes (mirrors ``retrieval.pipeline.retrieve()``).
+        ConfigurationError: unknown provider — a misconfiguration fails
+            loudly, not silently reroutes (the settings' ``*_provider`` value
+            is the only caller, so this means a bad ``.env``).
     """
     if provider == "ollama":
         kwargs: dict[str, Any] = {}
@@ -95,7 +99,9 @@ def build_chat_model(
         if api_key is not None:
             optional["api_key"] = api_key
         return ChatOpenAI(model=model, **optional)
-    raise ValueError(f"Unknown llm provider {provider!r}: expected ollama or openai")
+    raise ConfigurationError(
+        f"Unknown llm provider {provider!r}: expected ollama or openai"
+    )
 
 
 def _build_path_model(
@@ -120,7 +126,7 @@ def _build_path_model(
             if not value
         ]
         if missing:
-            raise ValueError(
+            raise ConfigurationError(
                 f"{purpose} uses the openai provider but "
                 f"{', '.join(missing)} is not set in .env"
             )

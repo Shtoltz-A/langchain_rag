@@ -4,7 +4,7 @@ A powerful, all-purpose RAG (Retrieval-Augmented Generation) application built w
 
 ## Current state
 
-Implemented and covered by offline tests: multi-format ingestion (loaders, per-type chunking, cleaning, context prefixes) · manifest-driven incremental multi-root indexing in Chroma · opt-in contextual retrieval (per-chunk LLM summary prepended before embedding, content-hash cached) · vector/keyword/hybrid retrieval (RRF) with opt-in listwise LLM reranking · Ollama ⇄ OpenAI-compatible gateway chat backends switchable per path via `generation/` · `--verbose` pipeline tracing.
+Implemented and covered by offline tests: multi-format ingestion (loaders, per-type chunking, cleaning, context prefixes) · manifest-driven incremental multi-root indexing in Chroma · opt-in contextual retrieval (per-chunk LLM summary prepended before embedding, content-hash cached) · vector/keyword/hybrid retrieval (RRF) with opt-in listwise LLM reranking · Ollama ⇄ OpenAI-compatible gateway chat backends switchable per path via `generation/` · a front-end-independent service layer (`services/` raise the domain errors from `errors.py`; only the CLI reports and exits) · `--verbose` pipeline tracing.
 
 **Next:** no numbered step committed — the evaluation harness (backlog) is the natural candidate, since it unblocks measuring every other quality change. See [`.agents/roadmap.md`](.agents/roadmap.md) for open threads and the improvement backlog.
 
@@ -42,5 +42,5 @@ All detailed project documentation lives in [`.agents/`](.agents/). Start here, 
 3. **Roadmap stays forward-looking.** When a step lands, remove it from `roadmap.md` (promote unfinished ideas to backlog); its durable result belongs in `architecture.md`/`rag-decisions.md` and the code — the roadmap never accumulates history.
 4. **Settings only via `get_settings()`.** No new environment reads or hardcoded tunables scattered through the code. See [configuration.md](.agents/configuration.md).
 5. **Terminal output only via `Console`.** No raw `print()` in application code.
-6. **Core logic stays CLI-agnostic.** `services/` (and `ingestion/`) must not import Typer or exit the process; commands belong in `cli.py`, and `app.py` stays a re-export facade.
+6. **Core logic stays CLI-agnostic.** `services/` (and `ingestion/`) must not import Typer or exit the process — a failed prerequisite raises a domain error instead; commands belong in `cli.py`, and the package root `__init__.py` is the public surface (re-exports `services/` + `errors.py`, no logic).
 7. **Record real decisions.** Non-obvious RAG design choices (chunking, retrieval, prompting) get an entry in [`.agents/rag-decisions.md`](.agents/rag-decisions.md) with rationale and revisit conditions.

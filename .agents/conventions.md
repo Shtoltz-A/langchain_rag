@@ -17,7 +17,7 @@ Code style and structural rules, derived from the existing code — follow them 
 
 ## Structure
 
-- **CLI boundary:** Typer only in `cli.py`; core code returns values / raises, never exits or parses args. Prerequisite checks (e.g. Ollama reachable) live in the CLI layer.
+- **CLI boundary:** Typer only in `cli.py`; core code returns values / raises, never exits or parses args. Prerequisite checks live *below* the CLI and raise domain errors (`services/health.ensure_ollama_running()` → `OllamaUnavailableError`); only `cli.py` turns an exception into `Console.error` + `typer.Exit`.
 - **Settings:** every tunable via `config.Settings` / `get_settings()` — no `os.getenv`, no magic numbers.
 - **Output:** all terminal I/O through the shared `Console` from `get_console()` (`c.debug`/`c.debug_block` for diagnostics; verbosity from the `verbose` setting, CLI `--verbose` wins) — never construct module-local `Console` instances.
 - **Expensive resources:** lazily created and cached — chat models only via the `generation/llm.py` factories (never a module-level `ChatOllama`), vector store as the `VectorStore` singleton class, settings via `lru_cache`. Never instantiate at import time.
@@ -27,7 +27,7 @@ Code style and structural rules, derived from the existing code — follow them 
 
 - Every indexed `Document` carries `metadata["source"]`; richer metadata per the chunk metadata contract (architecture.md).
 - Retrieval/prompting tunables come from settings, never hardcoded at call sites.
-- **Providers are a settings-only concern:** no module outside `generation/llm.py` imports a provider client class (`ChatOllama`/`ChatOpenAI`); prompts live in `generation/prompts.py` or stay stage-private with their stage (the rerank prompt sits with its output schema in `retrieval/reranking.py`).
+- **Providers are a settings-only concern:** no module outside `generation/llm.py` imports a provider client class (`ChatOllama`/`ChatOpenAI`) — the one carve-out is `services/health.py`, which uses `ollama.Client` for the connectivity preflight (connectivity only, never a chat/embedding client); prompts live in `generation/prompts.py` or stay stage-private with their stage (the rerank prompt sits with its output schema in `retrieval/reranking.py`).
 - **LLM calls in indexing live only in `ingestion/contextual.py`** — `process_file()` stays LLM-free (`services/indexing` applies the summarize stage after it), so batch-chain parity holds; its stage prompt stays private to the module.
 - **Model fallback has one source:** `config.fallback_chat_model` (per-provider default, shared by the `generation/` factories and the index fingerprint so both resolve the same model) — never re-derive it at call sites.
 - **Every LLM call goes through `generation.traced_invoke`** (no bare `.invoke()` on chat/structured runnables elsewhere): it is a transparent passthrough — the result comes back untouched, so test fakes stay valid — and the single place call size/duration are logged.
@@ -38,6 +38,8 @@ Code style and structural rules, derived from the existing code — follow them 
 ## Error handling
 
 - Fail fast with a clear message at the CLI boundary; raise domain-appropriate exceptions in core code.
+- The app's own exceptions live in `errors.py` (a leaf: it imports nothing from the package, so every layer may raise or catch them); `RagError` is the base a front end catches uniformly.
+- `ConfigurationError` marks `.env`/provider misconfiguration (unknown provider, unset model / base URL / key) and deliberately does **not** subclass `ValueError` — internal validation still raises plain `ValueError`, so the two stay separately catchable without message sniffing (rag-decisions.md).
 - `Console.error()` reports without raising; only the CLI decides to exit.
 - Handle "empty store" explicitly (`answer()` tells the user to index first).
 

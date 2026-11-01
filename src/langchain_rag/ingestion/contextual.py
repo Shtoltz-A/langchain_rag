@@ -120,8 +120,9 @@ def apply_contextual_summaries(
         - Indexing stage between ``process_file()`` and ``add_documents()``.
 
     Raises:
-        ValueError: summarizer misconfiguration (missing gateway settings) —
-            surfaces on the first cache-miss chunk, before embeddings start.
+        ConfigurationError: summarizer misconfiguration (missing gateway
+            settings) — surfaces on the first cache-miss chunk, before
+            embeddings start.
         ContextualGenerationError: a summarize call failed; successful
             summaries are already persisted, the caller must leave the file
             out of the manifest so the next run retries it.
@@ -148,9 +149,10 @@ def apply_contextual_summaries(
             _attach(chunk, summary)
             continue  # counted silently: the per-file summary line below totals it
         if llm is None:
-            # Misconfiguration (missing gateway settings) raises ValueError
-            # here — OUT of the fail-the-file handling below, so a broken
-            # .env aborts the run loudly instead of "retrying" forever.
+            # Misconfiguration (missing gateway settings) raises
+            # ConfigurationError here — OUT of the fail-the-file handling
+            # below, so a broken .env aborts the run loudly instead of
+            # "retrying" forever.
             llm = get_contextual_chat_model()
         try:
             response = traced_invoke(

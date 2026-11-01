@@ -49,6 +49,9 @@ def index(directory: Path) -> IndexResult:
         ValueError: ``directory`` overlaps an already-tracked root
             (containing, or contained by it) — such roots would claim the
             same files and corrupt each other's records.
+        ConfigurationError: contextual retrieval is enabled but the
+            summarizer's provider is misconfigured — raised by the up-front
+            probe below, before anything is wiped.
     """
     root = directory.resolve()
     if get_settings().contextual_retrieval_enabled:

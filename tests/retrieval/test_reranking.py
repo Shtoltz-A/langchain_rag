@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from langchain_core.documents import Document
 
+from langchain_rag.errors import ConfigurationError
 from langchain_rag.retrieval import reranking
 from langchain_rag.retrieval.reranking import _DocScore, _RerankResult, rerank
 
@@ -122,6 +123,13 @@ class TestRerankFailOpen:
             ConnectionError("ollama down"),
             TimeoutError("rerank call timed out"),
             ValueError("model output does not match the schema"),
+            # Even a config error fails open here: rerank catches broad
+            # Exception on purpose, so a broken rerank .env must degrade to
+            # the fusion order rather than abort an otherwise valid query.
+            ConfigurationError(
+                "reranking uses the openai provider "
+                "but OPENAI_API_KEY is not set in .env"
+            ),
         ]
         for error in errors:
             _install(monkeypatch, _FakeScorer(error=error))

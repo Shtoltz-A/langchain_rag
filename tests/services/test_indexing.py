@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from langchain_rag.errors import ConfigurationError
 from langchain_rag.ingestion import ContextualGenerationError
 from langchain_rag.services import indexing as indexing_mod
 from langchain_rag.services.indexing import (
@@ -457,11 +458,11 @@ class TestContextualStage:
         )
 
         def _boom() -> None:
-            raise ValueError("OPENAI_BASE_URL is not set in .env")
+            raise ConfigurationError("OPENAI_BASE_URL is not set in .env")
 
         monkeypatch.setattr(indexing_mod, "get_contextual_chat_model", _boom)
 
-        with pytest.raises(ValueError, match="OPENAI_BASE_URL"):
+        with pytest.raises(ConfigurationError, match="OPENAI_BASE_URL"):
             index(root)
 
         assert store.calls == []  # the fake store never even saw ("clear",)

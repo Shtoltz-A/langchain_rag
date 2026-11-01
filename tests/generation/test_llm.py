@@ -10,6 +10,7 @@ from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from langchain_rag.errors import ConfigurationError
 from langchain_rag.generation import llm
 from langchain_rag.generation.llm import build_chat_model, describe_model, resolve_model
 
@@ -70,7 +71,7 @@ def test_build_chat_model_forwards_provider_specific_kwargs() -> None:
     assert model.openai_api_key is not None
     assert model.openai_api_key.get_secret_value() == "k"
 
-    with pytest.raises(ValueError, match="provider"):
+    with pytest.raises(ConfigurationError, match="provider"):
         build_chat_model("anthropic", "m")  # type: ignore[arg-type]
 
 
@@ -81,7 +82,7 @@ def test_resolve_model_and_describe_model() -> None:
     assert resolve_model("openai", "picked", settings) == "picked"  # type: ignore[arg-type]
     assert resolve_model("ollama", None, _settings()) == "llama-test"  # type: ignore[arg-type]
     assert resolve_model("openai", None, settings) == "gw-model"  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="OPENAI_MODEL"):
+    with pytest.raises(ConfigurationError, match="OPENAI_MODEL"):
         resolve_model("openai", None, _settings())  # type: ignore[arg-type]
 
     # display form mirrors resolve_model but never raises
@@ -127,9 +128,9 @@ def test_ollama_path_factories_pin_their_own_settings(
 def test_openai_path_factories_build_and_require_gateway_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """openai provider: gateway client when configured, else a ValueError naming
-    the missing .env key and the purpose (rerank's fail-open warns with it;
-    the contextual probe aborts the whole index run on it)."""
+    """openai provider: gateway client when configured, else a ConfigurationError
+    naming the missing .env key and the purpose (rerank's fail-open warns with
+    it; the contextual probe aborts the whole index run on it)."""
     monkeypatch.setattr(
         llm, "get_settings", lambda: _settings(rerank_provider="openai", **_GATEWAY)
     )
@@ -149,7 +150,7 @@ def test_openai_path_factories_build_and_require_gateway_config(
             overrides: dict[str, Any] = {provider_setting: "openai", **_GATEWAY}
             overrides[missing] = "" if missing == "openai_base_url" else None
             monkeypatch.setattr(llm, "get_settings", lambda o=overrides: _settings(**o))  # type: ignore[assignment]
-            with pytest.raises(ValueError, match=rf"{label}.*{expected}"):
+            with pytest.raises(ConfigurationError, match=rf"{label}.*{expected}"):
                 getter()
 
 

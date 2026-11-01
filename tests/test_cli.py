@@ -1,8 +1,11 @@
-"""Offline CLI tests: directory validation, Ollama probe, clean error exits.
+"""Offline CLI tests: directory validation and clean error exits.
 
 Everything runs without a daemon, a vector store or an LLM: the service
-functions and the Ollama client are monkeypatched at their import site in
-``cli`` (the module looks these names up on itself at call time).
+functions and the Ollama probe are monkeypatched at their import site in
+``cli`` (the module looks these names up on itself at call time). What the
+probe itself catches and raises is tested in ``tests/services/test_health.py``;
+here only how the CLI turns a probe verdict or a service error into one
+terminal line plus an exit code.
 """
 
 from __future__ import annotations
@@ -11,30 +14,24 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import typer
-from ollama import ResponseError
 from typer.testing import CliRunner
 
 from langchain_rag import cli
+from langchain_rag.errors import ConfigurationError, OllamaUnavailableError
 
 runner = CliRunner()
 
 
-class _RaisingClient:
-    """Stands in for ``cli.Client``; ``list()`` fails with *error*."""
-
-    def __init__(self, error: Exception) -> None:
-        self._error = error
-
-    def list(self) -> None:
-        raise self._error
-
-
 @pytest.fixture
 def ollama_ok(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Neutralize the daemon probe (no network); record that it ran."""
+    """Neutralize the daemon probe (no network); record that it ran.
+
+    Patched on ``cli``, never on ``services.health``: cli name-imports the
+    function, so patching the health module would silently let tests hit
+    the real network.
+    """
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_ensure_ollama_running", lambda: calls.append("probe"))
+    monkeypatch.setattr(cli, "ensure_ollama_running", lambda: calls.append("probe"))
     return calls
 
 
@@ -83,32 +80,41 @@ class TestIndexDirectoryValidation:
         assert ollama_ok == []  # validation happens before the probe
 
 
-class TestEnsureOllamaRunning:
-    @pytest.mark.parametrize(
-        "error",
-        [
-            ConnectionError("Ollama is not running"),  # daemon down
-            ResponseError("daemon up but erroring", 500),  # answers with an error
-        ],
-    )
-    def test_client_errors_become_exit_1(
-        self, monkeypatch: pytest.MonkeyPatch, error: Exception
-    ) -> None:
-        monkeypatch.setattr(cli, "Client", lambda: _RaisingClient(error))
+class TestOllamaProbeFailure:
+    """A failed probe must end the run with one error line, not a traceback."""
 
-        with pytest.raises(typer.Exit) as excinfo:
-            cli._ensure_ollama_running()
+    @staticmethod
+    def _probe_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+        def down() -> None:
+            raise OllamaUnavailableError(
+                "Ollama is not reachable. Start it with `ollama serve`."
+            )
 
-        assert excinfo.value.exit_code == 1
+        monkeypatch.setattr(cli, "ensure_ollama_running", down)
 
     def test_query_reports_an_error_line_not_a_traceback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            cli, "Client", lambda: _RaisingClient(ResponseError("bad state", 500))
-        )
+        self._probe_fails(monkeypatch)
 
         result = runner.invoke(cli.app, ["query", "anything"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)  # exit, not a traceback
+        assert "Ollama is not reachable" in result.output
+
+    def test_index_reports_an_error_line_and_never_indexes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The never-called guard proves the probe gates the workflow: a failed
+        # probe must stop the run, not degrade into an empty or partial index.
+        def never_index(directory: Path) -> None:
+            raise AssertionError("a failed probe must not reach indexing")
+
+        self._probe_fails(monkeypatch)
+        monkeypatch.setattr(cli, "index_documents", never_index)
+
+        result = runner.invoke(cli.app, ["index", "--directory", str(tmp_path)])
 
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)  # exit, not a traceback
@@ -132,3 +138,40 @@ class TestIndexOverlapError:
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)  # exit, not a traceback
         assert "must stay below" in result.output
+
+
+class TestConfigurationErrorExit:
+    """The (RagError, ValueError) catch must cover the new domain error too."""
+
+    def test_index_misconfiguration_exits_with_its_message(
+        self, monkeypatch: pytest.MonkeyPatch, ollama_ok: list[str], tmp_path: Path
+    ) -> None:
+        def misconfigured(directory: Path) -> None:
+            raise ConfigurationError(
+                "contextual summaries uses the openai provider "
+                "but OPENAI_BASE_URL is not set in .env"
+            )
+
+        monkeypatch.setattr(cli, "index_documents", misconfigured)
+
+        result = runner.invoke(cli.app, ["index", "--directory", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)  # exit, not a traceback
+        assert "OPENAI_BASE_URL is not set" in result.output
+
+    def test_query_misconfiguration_exits_with_its_message(
+        self, monkeypatch: pytest.MonkeyPatch, ollama_ok: list[str]
+    ) -> None:
+        def misconfigured(question: str) -> None:
+            raise ConfigurationError(
+                "openai provider needs a model: set OPENAI_MODEL in .env"
+            )
+
+        monkeypatch.setattr(cli, "answer_question", misconfigured)
+
+        result = runner.invoke(cli.app, ["query", "anything"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)  # exit, not a traceback
+        assert "OPENAI_MODEL" in result.output

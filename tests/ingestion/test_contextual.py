@@ -10,6 +10,7 @@ import pytest
 from langchain_core.documents import Document
 
 from langchain_rag.config import Settings
+from langchain_rag.errors import ConfigurationError
 from langchain_rag.ingestion import contextual
 from langchain_rag.ingestion.contextual import (
     ContextualGenerationError,
@@ -255,7 +256,7 @@ def test_blank_output_indexes_bare_while_a_failed_call_aborts_the_file(
     broken_cache = tmp_path / "broken.json"
 
     def _boom() -> Any:
-        raise ValueError(
+        raise ConfigurationError(
             "contextual summaries uses the openai provider "
             "but OPENAI_BASE_URL is not set in .env"
         )
@@ -265,8 +266,11 @@ def test_blank_output_indexes_bare_while_a_failed_call_aborts_the_file(
     )
     monkeypatch.setattr(contextual, "get_contextual_chat_model", _boom)
 
-    with pytest.raises(ValueError, match="OPENAI_BASE_URL") as excinfo:
+    with pytest.raises(ConfigurationError, match="OPENAI_BASE_URL") as excinfo:
         apply_contextual_summaries([_chunk("alpha body")], cache_path=broken_cache)
 
     assert not isinstance(excinfo.value, ContextualGenerationError)
+    # The refactor's core property: a config error is not validation noise —
+    # it stays catchable (and excludable) as its own type.
+    assert not isinstance(excinfo.value, ValueError)
     assert not broken_cache.exists()
