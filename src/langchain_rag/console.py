@@ -7,6 +7,8 @@ import time
 
 import typer
 
+from .config import get_settings
+
 
 class Console:
     """Print timestamped messages, headings, and multiline blocks.
@@ -219,11 +221,7 @@ class Console:
         err = level in {"WARNING", "ERROR"}
         lines = content.rstrip().splitlines() or ["<empty>"]
 
-        if (
-                not self.verbose
-                and max_lines is not None
-                and 0 < max_lines < len(lines)
-        ):
+        if not self.verbose and max_lines is not None and 0 < max_lines < len(lines):
             hidden = len(lines) - max_lines
             lines = lines[:max_lines] + [
                 f"... ({hidden} more lines; enable verbose mode to see all)"
@@ -257,3 +255,23 @@ class Console:
                 level="DEBUG",
                 max_lines=None,
             )
+
+
+_console: Console | None = None
+
+
+def get_console() -> Console:
+    """Process-wide console, lazily built from settings (shared-state rule).
+
+    Every module uses this instead of constructing its own Console, so one
+    switch — the ``verbose`` setting or the CLI ``--verbose`` flag — controls
+    debug output everywhere. Warnings and errors are never gated by verbosity.
+
+    Use cases:
+        - Module-level ``c = get_console()`` for all terminal output.
+        - Flip verbosity on an already-built shared instance (CLI callback).
+    """
+    global _console
+    if _console is None:
+        _console = Console(verbose=get_settings().verbose)
+    return _console

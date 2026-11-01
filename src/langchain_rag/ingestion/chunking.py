@@ -25,9 +25,9 @@ from langchain_text_splitters import (
 )
 
 from ..config import Settings, get_settings
-from ..console import Console
+from ..console import get_console
 
-c = Console()
+c = get_console()
 
 _settings: Settings = get_settings()
 

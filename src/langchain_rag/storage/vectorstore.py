@@ -7,7 +7,7 @@ class — one persisted collection per process, built lazily on first use.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Self
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -39,7 +39,7 @@ class VectorStore:
 
     _chroma: Chroma
 
-    def __new__(cls) -> VectorStore:
+    def __new__(cls) -> Self:
         """Return the shared instance, building Chroma on first call.
 
         Deliberately no ``__init__``: every later ``VectorStore()`` call
@@ -82,6 +82,20 @@ class VectorStore:
     def search(self, question: str, k: int) -> list[Document]:
         """Return the k most similar chunks for the question."""
         return self._chroma.similarity_search(question, k=k)
+
+    def all_documents(self) -> list[Document]:
+        """Every stored chunk as ``Document``s (BM25 corpus building, Step 4).
+
+        Vectors are excluded via ``include`` — they are the bulk of the
+        response and keyword retrieval has no use for them.
+        """
+        raw = self._chroma.get(include=["documents", "metadatas"])
+        return [
+            Document(page_content=text or "", metadata=metadata or {})
+            for text, metadata in zip(
+                raw["documents"] or [], raw["metadatas"] or [], strict=True
+            )
+        ]
 
     def count(self) -> int:
         """Number of chunks currently stored (manifest desync guard).

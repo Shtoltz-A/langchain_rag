@@ -18,9 +18,9 @@ from langchain_core.document_loaders.base import BaseLoader
 from langchain_core.documents import Document
 from pypdf import PdfReader
 
-from ..console import Console
+from ..console import get_console
 
-c = Console()
+c = get_console()
 
 
 def _is_hidden(path: Path, root: Path) -> bool:

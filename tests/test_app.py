@@ -1,12 +1,14 @@
-"""Unit tests for app.index orchestration (pure fakes: no Ollama, no Chroma)."""
+"""Unit tests for app orchestration: index() and answer() (pure fakes: no Ollama, no Chroma)."""
 
 from __future__ import annotations
 
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from langchain_core.documents import Document
 
 from langchain_rag import app as app_mod
 from langchain_rag.app import (
@@ -409,3 +411,83 @@ class TestIndexTrackedRoot:
         assert final.sources_for(root_a)[str(changed)].sha256 == "sha-new"
         # Root B survives the update untouched.
         assert final.sources_for(root_b) == manifest.sources_for(root_b)
+
+
+class _FakeChatModel:
+    """Stands in for the answer LLM: records messages, replays a canned reply."""
+
+    def __init__(self, content: Any = "answer text") -> None:
+        self.content = content
+        self.prompts: list[Any] = []
+
+    def invoke(self, messages: Any) -> Any:
+        self.prompts.append(messages)
+        return SimpleNamespace(content=self.content)
+
+
+class TestAnswer:
+    """Wiring: retrieve → context budget → grounding prompt → answer LLM."""
+
+    @staticmethod
+    def _install(
+        monkeypatch: pytest.MonkeyPatch,
+        docs: list[Document],
+        fake_llm: _FakeChatModel,
+        max_context_chars: int = 12_000,
+    ) -> None:
+        # Patch where the names are used: app.py's own globals.
+        monkeypatch.setattr(app_mod, "retrieve", lambda question: list(docs))
+        monkeypatch.setattr(app_mod, "get_answer_llm", lambda: fake_llm)
+        monkeypatch.setattr(
+            app_mod,
+            "get_settings",
+            lambda: SimpleNamespace(max_context_chars=max_context_chars),
+        )
+
+    def test_answers_from_retrieved_context(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        docs = [Document(page_content="A is one."), Document(page_content="B is two.")]
+        fake_llm = _FakeChatModel()
+        self._install(monkeypatch, docs, fake_llm)
+
+        assert app_mod.answer("what is A?") == "answer text"
+
+        (role, system), (_, human) = fake_llm.prompts[0]
+        assert role == "system"
+        assert "only the provided context" in system  # grounding prompt attached
+        assert "A is one." in human and "B is two." in human
+        assert "what is A?" in human
+
+    def test_empty_retrieval_short_circuits_the_llm(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_llm = _FakeChatModel()
+        self._install(monkeypatch, [], fake_llm)
+
+        assert "No relevant chunks found" in app_mod.answer("q")
+        assert fake_llm.prompts == []
+
+    def test_context_is_cut_to_the_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_llm = _FakeChatModel()
+        self._install(
+            monkeypatch,
+            [Document(page_content="k" * 300)],
+            fake_llm,
+            max_context_chars=120,
+        )
+
+        app_mod.answer("q")
+        (_, human) = fake_llm.prompts[0][1]
+        # "k" not "x": the prompt template's own "Context:" contains an x.
+        assert human.count("k") == 120
+
+    def test_none_content_becomes_empty_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake_llm = _FakeChatModel(content=None)
+        self._install(monkeypatch, [Document(page_content="a")], fake_llm)
+
+        assert app_mod.answer("q") == ""

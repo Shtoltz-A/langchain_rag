@@ -16,12 +16,12 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
-from ..console import Console
+from ..console import get_console
 from .chunking import split_documents
 from .cleaning import apply_context_prefixes, normalize_documents
 from .loaders import get_loader, iter_supported_files, load_documents
 
-c = Console()
+c = get_console()
 
 
 def process_file(path: Path, root: Path) -> list[Document]:
@@ -51,7 +51,10 @@ def process_file(path: Path, root: Path) -> list[Document]:
         # Consume inside the guard: lazy_load is a generator, so file
         # errors (encoding, corrupt PDF) surface at consumption time.
         documents = loader(path, root=root).load()
-        return apply_context_prefixes(split_documents(normalize_documents(documents)))
+        c.debug(f"Loaded {len(documents)} documents from {path.name}")
+        chunks = apply_context_prefixes(split_documents(normalize_documents(documents)))
+        c.debug(f"Split {path.name} into {len(chunks)} chunks")
+        return chunks
     except Exception as exc:
         c.error(f"Failed to process {path}: {exc}")
         return []

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any
+import itertools
+from typing import Any, ClassVar
 
 import pytest
+from langchain_core.documents import Document
 
 from langchain_rag.config import PROJECT_ROOT, Settings
+from langchain_rag.retrieval.retrievers import doc_key
 from langchain_rag.storage import vectorstore as vectorstore_mod
 from langchain_rag.storage.vectorstore import VectorStore
 
@@ -28,6 +31,12 @@ class _FakeCollection:
 class _FakeChroma:
     """Stands in for the LangChain Chroma wrapper; records every call."""
 
+    # Canned stored chunks shared by both read paths (search and get).
+    _STORE: ClassVar[list[tuple[str, dict]]] = [
+        ("chunk one", {"source": r"C:\docs\a.txt"}),
+        ("chunk two", {"source": r"C:\docs\b.pdf", "page": 2}),
+    ]
+
     def __init__(
         self, collection_name: str, embedding_function: Any, persist_directory: str
     ) -> None:
@@ -46,9 +55,22 @@ class _FakeChroma:
     def delete(self, where: dict) -> None:
         self.calls.append(("delete", where))
 
-    def similarity_search(self, query: str, k: int) -> list[str]:
+    def similarity_search(self, query: str, k: int) -> list[Document]:
         self.calls.append(("similarity_search", query, k))
-        return ["hit"] * k
+        return [
+            Document(page_content=text, metadata=dict(meta))
+            for text, meta in itertools.islice(itertools.cycle(self._STORE), k)
+        ]
+
+    def get(self, include: list[str]) -> dict:
+        # ids stay top-level (like chromadb): neither read path may leak them
+        # into Document metadata — retrieval key consistency depends on it.
+        self.calls.append(("get", tuple(include)))
+        return {
+            "ids": [f"id-{i}" for i, _ in enumerate(self._STORE)],
+            "documents": [text for text, _ in self._STORE],
+            "metadatas": [dict(meta) for _, meta in self._STORE],
+        }
 
 
 @pytest.fixture(autouse=True)
@@ -133,3 +155,36 @@ class TestPrimitives:
         self, fake_chroma: list[_FakeChroma]
     ) -> None:
         assert VectorStore().count() == 7
+
+
+class TestReadPathKeyConsistency:
+    """RRF dedupe compares doc_keys across the two read paths, so the same
+    stored chunk must yield the same key via search() and via
+    all_documents() — an id injected by one path only would split every key
+    into id:… vs sha1:… and silently disable the dedupe (rag-decisions.md)."""
+
+    def test_search_and_all_documents_agree_on_doc_key(
+        self, fake_chroma: list[_FakeChroma]
+    ) -> None:
+        via_search = VectorStore().search("q", k=1)[0]
+        via_get = VectorStore().all_documents()[0]
+        assert doc_key(via_search) == doc_key(via_get)
+
+    def test_neither_read_path_injects_an_id(
+        self, fake_chroma: list[_FakeChroma]
+    ) -> None:
+        assert "id" not in VectorStore().search("q", k=1)[0].metadata
+        assert all("id" not in doc.metadata for doc in VectorStore().all_documents())
+
+    def test_position_metadata_survives_both_paths(
+        self, fake_chroma: list[_FakeChroma]
+    ) -> None:
+        # The PDF chunk's page must distinguish it on either path, not just
+        # one — otherwise position-aware dedupe diverges between the paths.
+        paged_search = next(
+            doc for doc in VectorStore().search("q", k=2) if "page" in doc.metadata
+        )
+        paged_get = next(
+            doc for doc in VectorStore().all_documents() if "page" in doc.metadata
+        )
+        assert doc_key(paged_search) == doc_key(paged_get)
