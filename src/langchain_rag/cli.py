@@ -5,11 +5,11 @@ import typer
 from ollama import Client
 
 from .app import (
-    PROJECT_ROOT,
     answer as answer_question,
     clear_index,
     index as index_documents,
 )
+from .config import PROJECT_ROOT
 from .console import get_console
 
 
@@ -60,14 +60,23 @@ def index(
     clear: bool = typer.Option(
         False,
         "--clear",
-        help="Delete ALL indexed data (vector store + manifest) and exit.",
+        help="Delete ALL indexed data (vector store + manifest) and exit. "
+        "The chunk-summary cache (data/chunk_summaries.json) is kept.",
     ),
 ) -> None:
     """Build and persist the document index (incremental per folder)."""
     _ensure_ollama_running()
     if clear:
-        removed = clear_index()
-        c.log(f"Index cleared: {removed} chunks removed, manifest file deleted.")
+        result = clear_index()
+        pruned = (
+            f", {result.folders_pruned} stale segment folder(s) pruned"
+            if result.folders_pruned
+            else ""
+        )
+        c.log(
+            f"Index cleared: {result.chunks_removed} chunks removed, "
+            f"manifest file deleted{pruned}."
+        )
         return
     try:
         result = index_documents(directory)

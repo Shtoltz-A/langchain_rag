@@ -2,7 +2,7 @@
 
 Stage-private prompts stay with their stage — the rerank prompt lives with its
 output schema in ``retrieval/reranking.py``. This module owns the generation-
-side prompt consumed by ``app.answer()``.
+side prompt consumed by ``services/answering.answer()``.
 """
 
 ANSWER_SYSTEM_PROMPT = (

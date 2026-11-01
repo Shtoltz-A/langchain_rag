@@ -1,8 +1,10 @@
 """``retrieve()``: mode routing → candidate generation → RRF fusion → rerank.
 
-The query pipeline behind ``app.answer()``; mode and reranker are pure
+The query pipeline behind ``services/answering.answer()``; mode and reranker
+are pure
 settings decisions, so nothing here knows about the CLI. In verbose mode every
-stage reports itself: counts and durations as debug lines, ranked results as
+stage reports itself once as a styled ``Console.trace`` line (mode, counts and
+duration in one line — no per-stage debug chatter), with ranked results as
 numbered ``label :: preview`` tables.
 """
 
@@ -51,31 +53,25 @@ def retrieve(question: str) -> Ranking:
             covers injected or unvalidated settings objects).
     """
     settings = get_settings()
-    c.debug(f"Query: {question!r}")
     store = VectorStore()
     chunks_in_store = store.count()
     if chunks_in_store == 0:
         c.debug("Vector store is empty — nothing to retrieve")
         return []
-    c.debug(f"Store holds {chunks_in_store} chunks")
 
     n_candidates = settings.top_k * (
         settings.rerank_candidate_multiplier if settings.rerank_enabled else 1
     )
-    budget = (
-        f"top_k={settings.top_k} × {settings.rerank_candidate_multiplier} for rerank"
-        if settings.rerank_enabled
-        else f"top_k={settings.top_k}, rerank off"
-    )
+    c.trace("query", repr(question), f"{chunks_in_store} chunks indexed")
     mode = settings.retrieval_mode
-    c.debug(f"Mode {mode}: asking for {n_candidates} candidates ({budget})")
 
     if mode == "vector":
         start = time.perf_counter()
         candidates = vector_search(store, question, n_candidates)
-        c.debug(
-            f"Vector search: {len(candidates)} chunks in "
-            f"{time.perf_counter() - start:.1f}s (includes the query embedding)"
+        c.trace(
+            "vector",
+            f"{len(candidates)}/{n_candidates} candidates",
+            f"{time.perf_counter() - start:.1f}s (incl. query embedding)",
         )
         _results_block("vector results", candidates)
     elif mode == "keyword":
@@ -84,10 +80,11 @@ def retrieve(question: str) -> Ranking:
         start = time.perf_counter()
         keyword = BM25Index(corpus)
         candidates = keyword.search(question, n_candidates)
-        c.debug(
-            f"Keyword search: BM25 built over {len(corpus)} chunks, "
-            f"{len(candidates)} scored >0, "
-            f"in {time.perf_counter() - start:.1f}s"
+        c.trace(
+            "keyword",
+            f"{len(candidates)}/{n_candidates} candidates",
+            f"BM25 over {len(corpus)} chunks",
+            f"{time.perf_counter() - start:.1f}s",
         )
         _results_block("keyword results", candidates)
     elif mode == "hybrid":
@@ -101,14 +98,17 @@ def retrieve(question: str) -> Ranking:
         keyword_secs = time.perf_counter() - start
         # Pre-fusion lists stay visible: post-fusion alone, nothing explains
         # which retriever buried a chunk that RRF then ranked low.
-        c.debug(
-            f"Vector search: {len(vector_ranking)} chunks in {vector_secs:.1f}s "
-            "(includes the query embedding)"
+        c.trace(
+            "vector",
+            f"{len(vector_ranking)}/{n_candidates} candidates",
+            f"{vector_secs:.1f}s (incl. query embedding)",
         )
         _results_block("vector results", vector_ranking)
-        c.debug(
-            f"Keyword search: BM25 built over {len(corpus)} chunks, "
-            f"{len(keyword_ranking)} scored >0, in {keyword_secs:.1f}s"
+        c.trace(
+            "keyword",
+            f"{len(keyword_ranking)}/{n_candidates} candidates",
+            f"BM25 over {len(corpus)} chunks",
+            f"{keyword_secs:.1f}s",
         )
         _results_block("keyword results", keyword_ranking)
         candidates = rrf_fuse(
@@ -117,11 +117,12 @@ def retrieve(question: str) -> Ranking:
             c=settings.rrf_c,
             top_n=n_candidates,
         )
-        c.debug(
-            f"RRF fused {len(vector_ranking)} + {len(keyword_ranking)} ranked "
-            f"chunks → {len(candidates)} candidates (weights "
-            f"{settings.hybrid_vector_weight}/{settings.hybrid_bm25_weight}, "
-            f"c={settings.rrf_c})"
+        c.trace(
+            "rrf",
+            f"{len(vector_ranking)} + {len(keyword_ranking)} → {len(candidates)} "
+            "candidates",
+            f"weights {settings.hybrid_vector_weight}/{settings.hybrid_bm25_weight}",
+            f"c={settings.rrf_c}",
         )
         _results_block("fused candidates", candidates)
     else:
@@ -131,18 +132,12 @@ def retrieve(question: str) -> Ranking:
 
     if settings.rerank_enabled:
         final = rerank(question, candidates, k=settings.top_k)
-    else:
-        final = candidates[: settings.top_k]
-
-    if settings.rerank_enabled:
         backend = (
-            f"on({settings.rerank_provider}/"
+            f"rerank on({settings.rerank_provider}/"
             f"{describe_model(settings.rerank_provider, settings.rerank_model, settings)})"
         )
     else:
-        backend = "off"
-    c.debug(
-        f"Retrieval: mode={mode}, candidates={len(candidates)}, "
-        f"kept={len(final)}, rerank={backend}"
-    )
+        final = candidates[: settings.top_k]
+        backend = "rerank off"
+    c.trace("kept", f"{len(final)}/{len(candidates)} chunks", backend, ok=True)
     return final

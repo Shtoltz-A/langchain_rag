@@ -4,9 +4,9 @@ A powerful, all-purpose RAG (Retrieval-Augmented Generation) application built w
 
 ## Current state
 
-Implemented and covered by offline tests: multi-format ingestion (loaders, per-type chunking, cleaning, context prefixes) · manifest-driven incremental multi-root indexing in Chroma · vector/keyword/hybrid retrieval (RRF) with opt-in listwise LLM reranking · Ollama ⇄ OpenAI-compatible gateway chat backends switchable per path via `generation/` · `--verbose` pipeline tracing.
+Implemented and covered by offline tests: multi-format ingestion (loaders, per-type chunking, cleaning, context prefixes) · manifest-driven incremental multi-root indexing in Chroma · opt-in contextual retrieval (per-chunk LLM summary prepended before embedding, content-hash cached) · vector/keyword/hybrid retrieval (RRF) with opt-in listwise LLM reranking · Ollama ⇄ OpenAI-compatible gateway chat backends switchable per path via `generation/` · `--verbose` pipeline tracing.
 
-**Next:** Step 5 — Contextual Retrieval (per-chunk LLM summaries before embedding). See [`.agents/roadmap.md`](.agents/roadmap.md) for its scope, open threads, and the improvement backlog.
+**Next:** no numbered step committed — the evaluation harness (backlog) is the natural candidate, since it unblocks measuring every other quality change. See [`.agents/roadmap.md`](.agents/roadmap.md) for open threads and the improvement backlog.
 
 ## Tech stack
 
@@ -16,6 +16,7 @@ Implemented and covered by offline tests: multi-format ingestion (loaders, per-t
 | LLM & embeddings | Embeddings: local Ollama (`langchain-ollama`); chat: Ollama **or** OpenAI-compatible gateway (`langchain-openai`), provider per path via `generation/` |
 | Vector store | Chroma, persisted at `data/chroma/` (`langchain-chroma`), behind `storage/vectorstore.py` |
 | Incremental indexing | Multi-root content-hash manifest at `data/index_manifest.json` (`storage/manifest.py`) |
+| Contextual summaries | Opt-in per-chunk LLM context sentence prepended before embedding (`ingestion/contextual.py`), content-hash cache at `data/chunk_summaries.json` (`storage/summary_cache.py`) |
 | Splitting | `ingestion/chunking.py` (per-type strategies); `langchain-text-splitters` used as building blocks |
 | Retrieval | `retrieval/` modes `vector`/`keyword`/`hybrid` (RRF fusion, `rank-bm25`) + opt-in LLM reranking, behind `retrieval.retrieve()` |
 | CLI | Typer (entry point: `app`) |
@@ -41,5 +42,5 @@ All detailed project documentation lives in [`.agents/`](.agents/). Start here, 
 3. **Roadmap stays forward-looking.** When a step lands, remove it from `roadmap.md` (promote unfinished ideas to backlog); its durable result belongs in `architecture.md`/`rag-decisions.md` and the code — the roadmap never accumulates history.
 4. **Settings only via `get_settings()`.** No new environment reads or hardcoded tunables scattered through the code. See [configuration.md](.agents/configuration.md).
 5. **Terminal output only via `Console`.** No raw `print()` in application code.
-6. **Core logic stays CLI-agnostic.** `app.py` (and `ingestion/`) must not import Typer or exit the process; commands belong in `cli.py`.
+6. **Core logic stays CLI-agnostic.** `services/` (and `ingestion/`) must not import Typer or exit the process; commands belong in `cli.py`, and `app.py` stays a re-export facade.
 7. **Record real decisions.** Non-obvious RAG design choices (chunking, retrieval, prompting) get an entry in [`.agents/rag-decisions.md`](.agents/rag-decisions.md) with rationale and revisit conditions.

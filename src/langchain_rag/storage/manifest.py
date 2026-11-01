@@ -5,11 +5,13 @@ absolute path, exactly as stored in Chroma metadata ``source``) by *index
 root*, mapping it to the SHA-256 of its bytes plus the chunk count it
 produced. Combined with a fingerprint of everything that influences chunk
 *content* (pipeline code version, embedding model, cleaning, chunking
-settings), it lets the indexer decide what is added / changed / deleted /
-unchanged *per root*, while several roots coexist in one vector collection.
+settings, plus the contextual-retrieval configuration while enabled), it lets
+the indexer decide what is added / changed / deleted / unchanged *per root*,
+while several roots coexist in one vector collection.
 
 Use cases:
-    - Incremental indexing (``app.index()``): ``diff()`` between a freshly
+    - Incremental indexing (``services/indexing.index()``): ``diff()``
+      between a freshly
       scanned file→hash map of one root and that root's source records from
       ``Manifest.sources_for()`` decides which files to (re-)index or delete;
       other roots are never touched.
@@ -33,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePath
 
-from ..config import PROJECT_ROOT, get_settings
+from ..config import PROJECT_ROOT, Settings, fallback_chat_model, get_settings
 
 _PIPELINE_VERSION = (
     1  # manual bump: ingestion code that changes chunk content/boundaries
@@ -146,17 +148,20 @@ def compute_fingerprint() -> str:
 
     Covers the pipeline code version, the embedding model (chunk *ids* may
     stay but vectors must be re-embedded), cleaning, and all ``chunk_*``
-    settings. Deliberately excludes retrieval-only knobs (``OLLAMA_LLM_MODEL``,
-    ``top_k``, ``max_context_chars``): changing those invalidates nothing
-    stored.
+    settings. Contextual-retrieval settings join the payload **only while
+    enabled** (they change stored chunk text): with the feature off the
+    payload — and therefore every existing manifest — stays byte-identical,
+    and turning it on is itself the invalidation. Retrieval-only knobs stay
+    out (``top_k``, ``max_context_chars``): changing those invalidates
+    nothing stored.
 
     Returns:
         Hex SHA-256 of the canonical (``sort_keys=True``) JSON payload.
     """
     settings = get_settings()
-    payload = {
+    payload: dict = {
         "pipeline_version": _PIPELINE_VERSION,
-        "embedding_model": settings.OLLAMA_EMBEDDING_MODEL,
+        "embedding_model": settings.ollama_embedding_model,
         "cleaning_enabled": settings.cleaning_enabled,
         "chunking": {
             key: value
@@ -164,8 +169,28 @@ def compute_fingerprint() -> str:
             if key.startswith("chunk_")
         },
     }
+    if settings.contextual_retrieval_enabled:
+        payload["contextual"] = _contextual_fingerprint_payload(settings)
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _contextual_fingerprint_payload(settings: Settings) -> dict:
+    """Fingerprint block for enabled contextual retrieval (Step 5).
+
+    Records the *resolved* summary model (via the shared
+    ``config.fallback_chat_model``, so it is exactly the model
+    ``generation.get_contextual_chat_model`` will build) — otherwise changing
+    ``ollama_llm_model`` with no override would silently mix summary
+    generations inside one "valid" manifest.
+    """
+    return {
+        "enabled": True,
+        "provider": settings.contextual_provider,
+        "model": settings.contextual_model
+        or fallback_chat_model(settings.contextual_provider, settings),
+        "source_max_chars": settings.contextual_source_max_chars,
+    }
 
 
 def hash_file(path: Path) -> str:

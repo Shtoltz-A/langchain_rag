@@ -22,7 +22,7 @@ from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from ..config import Settings, get_settings
+from ..config import Settings, fallback_chat_model, get_settings
 from ..console import get_console
 
 c = get_console()
@@ -33,27 +33,22 @@ Provider = Literal["ollama", "openai"]
 def resolve_model(provider: Provider, override: str | None, settings: Settings) -> str:
     """Model name for a pipeline path: explicit override, else provider default.
 
-    ``ollama`` falls back to ``OLLAMA_LLM_MODEL`` (Step 1 semantics);
-    ``openai`` to ``openai_model``. An unset gateway model is a
-    misconfiguration: raise, don't guess — rerank turns this into its
-    fail-open warning naming the missing setting.
+    Provider defaults come from ``config.fallback_chat_model`` (shared with
+    the index fingerprint so both hash/dispatch the *same* model). An unset
+    gateway model is a misconfiguration: raise, don't guess — rerank turns
+    this into its fail-open warning naming the missing setting.
     """
     if override:
         return override
-    if provider == "ollama":
-        return settings.OLLAMA_LLM_MODEL
-    if not settings.openai_model:
+    model = fallback_chat_model(provider, settings)
+    if provider == "openai" and not model:
         raise ValueError("openai provider needs a model: set OPENAI_MODEL in .env")
-    return settings.openai_model
+    return model
 
 
 def describe_model(provider: Provider, override: str | None, settings: Settings) -> str:
     """Display form of ``resolve_model`` for debug lines — never raises."""
-    if override:
-        return override
-    if provider == "ollama":
-        return settings.OLLAMA_LLM_MODEL
-    return settings.openai_model or "<model-unset>"
+    return override or fallback_chat_model(provider, settings) or "<model-unset>"
 
 
 def build_chat_model(
@@ -189,6 +184,29 @@ def get_rerank_chat_model() -> BaseChatModel:
     )
 
 
+@lru_cache(maxsize=1)
+def get_contextual_chat_model() -> BaseChatModel:
+    """Contextual-summary path chat model, lazily built and cached.
+
+    No structured-output wrapper sits on top of this path, so — like
+    ``get_answer_llm`` — the factory itself carries the one cache layer
+    (``contextual`` imports and calls it directly; tests patch it there).
+    ``temperature=0.0`` keeps summaries repeatable, ``max_retries=0`` keeps
+    ``contextual_timeout`` the real latency bound — a summarize call that dies
+    fails the *file* (manifest retry), and SDK retries would multiply the
+    worst-case stall of every chunk in it.
+    """
+    settings = get_settings()
+    return _build_path_model(
+        "contextual summaries",
+        settings.contextual_provider,
+        settings.contextual_model,
+        temperature=0.0,
+        timeout=settings.contextual_timeout,
+        max_retries=0,
+    )
+
+
 def describe_answer_backend() -> str:
     """Display form of the answer path's backend (``provider/model``).
 
@@ -202,21 +220,31 @@ def describe_answer_backend() -> str:
     )
 
 
+def describe_contextual_backend() -> str:
+    """Display form of the contextual-summary path's backend (``provider/model``)."""
+    settings = get_settings()
+    return (
+        f"{settings.contextual_provider}/"
+        f"{describe_model(settings.contextual_provider, settings.contextual_model, settings)}"
+    )
+
+
 def traced_invoke(
     purpose: str, backend: str, runnable: Any, messages: list[Any]
 ) -> Any:
     """Invoke a chat (or structured-output) runnable with a verbose trace.
 
-    The single logging seam around every LLM call the app makes: request line
-    (backend + prompt size) before, duration after, error class on failure —
-    all via ``Console.debug``, so the trace appears exactly in verbose mode.
+    The single logging seam around every LLM call the app makes: one styled
+    completion line (backend, prompt→response size, duration) via
+    ``Console.trace``, error class via ``Console.debug`` on failure — the
+    trace appears exactly in verbose mode, and a successful call is one line.
 
     Deliberately a transparent passthrough: the result comes back untouched,
     which is what lets test fakes stand in for real runnables and makes this
     the one place call duration is measured.
 
     Args:
-        purpose: label for the trace lines (``answer``, ``rerank``).
+        purpose: label for the trace line (``answer``, ``rerank``).
         backend: display form of the backend, e.g. ``ollama/llama3.2``.
         runnable: anything with ``invoke(messages)``.
         messages: ``(role, content)`` tuples (LangChain's coerced form);
@@ -228,7 +256,6 @@ def traced_invoke(
         return len(str(content))
 
     prompt_chars = sum(_chars(message) for message in messages)
-    c.debug(f"LLM[{purpose}] -> {backend}: prompt {prompt_chars:,} chars")
     start = time.perf_counter()
     try:
         result = runnable.invoke(messages)
@@ -238,5 +265,13 @@ def traced_invoke(
             f"{time.perf_counter() - start:.1f}s"
         )
         raise
-    c.debug(f"LLM[{purpose}] <- response in {time.perf_counter() - start:.1f}s")
+    # Response size only where there is text to size: structured-output
+    # results carry no message .content, and str()-ing them would print noise.
+    content = getattr(result, "content", None)
+    size = (
+        f"{prompt_chars:,} → {len(str(content)):,} chars"
+        if content is not None
+        else f"{prompt_chars:,} chars in"
+    )
+    c.trace(f"LLM {purpose}", backend, size, f"{time.perf_counter() - start:.1f}s")
     return result

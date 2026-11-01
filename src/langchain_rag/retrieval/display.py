@@ -16,10 +16,12 @@ from langchain_core.documents import Document
 PREVIEW_WIDTH = 70
 
 # Cleaning prepends a "[File: ...]" / "[Doc: ... p.N]" context prefix line
-# (ingestion/cleaning.py); ``doc_label`` already says the same thing, so
-# previews skip it instead of repeating it. Implemented locally (not by
-# importing ingestion) to keep retrieval independent of the ingest package.
-_PREFIX_LINE = re.compile(r"^\[.*\]\n")
+# and the contextual stage prepends a "[Context: ...]" summary line
+# (ingestion/cleaning.py, ingestion/contextual.py); ``doc_label`` already
+# says the file's identity, so previews skip *every* leading bracket line
+# instead of repeating it. Implemented locally (not by importing ingestion)
+# to keep retrieval independent of the ingest package.
+_PREFIX_LINE = re.compile(r"^(?:\[.*\]\n)+")
 
 
 def doc_label(doc: Document) -> str:

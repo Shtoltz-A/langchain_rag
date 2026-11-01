@@ -1,6 +1,7 @@
 """Query-side retrieval pipeline (Step 4): candidates → RRF fusion → rerank.
 
-Single entry point: ``retrieve(question)`` returns the chunks ``app.answer()``
+Single entry point: ``retrieve(question)`` returns the chunks
+``services/answering.answer()``
 feeds to the LLM (implementation in ``pipeline.py``).
 """
 

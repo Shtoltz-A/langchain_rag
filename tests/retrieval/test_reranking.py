@@ -41,37 +41,27 @@ def _result(*pairs: tuple[Any, Any]) -> _RerankResult:
 
 
 class TestRerankOrdering:
-    def test_reorders_by_llm_scores_and_cuts_k(
+    def test_orders_by_scores_cuts_k_and_skips_empty_input(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         d1, d2, d3 = _docs("first", "second", "third")
+        # Best score first, cut at k.
         _install(monkeypatch, _FakeScorer(result=_result((2, 9), (3, 5), (1, 2))))
         assert rerank("q", [d1, d2, d3], k=2) == [d2, d3]
-
-    def test_ties_keep_incoming_candidate_order(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        d1, d2, d3 = _docs("first", "second", "third")
+        # Ties keep the incoming candidate order.
         _install(monkeypatch, _FakeScorer(result=_result((3, 7), (1, 7), (2, 7))))
         assert rerank("q", [d1, d2, d3], k=3) == [d1, d2, d3]
-
-    def test_k_larger_than_candidates_returns_all_reordered(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        d1, d2 = _docs("first", "second")
+        # k larger than the candidate list returns everything, reordered.
         _install(monkeypatch, _FakeScorer(result=_result((2, 8), (1, 1))))
         assert rerank("q", [d1, d2], k=5) == [d2, d1]
-
-    def test_empty_candidates_skip_the_llm_call(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        # No candidates: return [] without paying for the LLM call.
         scorer = _install(monkeypatch, _FakeScorer(result=_result()))
         assert rerank("q", [], k=3) == []
         assert scorer.prompts == []
 
 
 class TestRerankPrompt:
-    def test_prompt_delimits_candidates_and_carries_anti_injection(
+    def test_delimits_clamps_and_carries_anti_injection(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         d1, d2 = _docs("first chunk", "second chunk")
@@ -82,10 +72,7 @@ class TestRerankPrompt:
         assert "why?" in human
         assert '<document id="1">\nfirst chunk\n</document>' in human
         assert '<document id="2">\nsecond chunk\n</document>' in human
-
-    def test_oversized_chunks_are_truncated_in_the_prompt(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+        # Oversized chunks are cut at the configured cap inside the prompt.
         cap = reranking.get_settings().rerank_doc_max_chars
         d1 = _docs("x" * (cap + 500) + "TAILMARKER")[0]
         scorer = _install(monkeypatch, _FakeScorer(result=_result((1, 5))))
@@ -96,18 +83,15 @@ class TestRerankPrompt:
 
 
 class TestRerankScoreSanitising:
-    def test_out_of_range_scores_are_clamped_not_rejected(
+    def test_sanitises_out_of_range_and_coerced_scores(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Uncut 15 would beat 11; clamped both are 10, so ties keep order.
+        # Out-of-range scores are clamped, not rejected: uncut 15 would beat
+        # 11; clamped both are 10, so ties keep order.
         d1, d2 = _docs("first", "second")
         _install(monkeypatch, _FakeScorer(result=_result((1, 11.0), (2, 15.0))))
         assert rerank("q", [d1, d2], k=2) == [d1, d2]
-
-    def test_scores_coerced_by_the_schema_are_usable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        d1, d2 = _docs("first", "second")
+        # Values the schema coerces (str → int/float) stay usable.
         _install(monkeypatch, _FakeScorer(result=_result(("2", "8"), (1, 1))))
         assert rerank("q", [d1, d2], k=2) == [d2, d1]
 
@@ -115,9 +99,11 @@ class TestRerankScoreSanitising:
 class TestRerankFailOpen:
     """Any trouble must return the incoming retrieval order, never raise."""
 
-    @pytest.mark.parametrize(
-        "result",
-        [
+    def test_malformed_results_and_llm_errors_keep_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        docs = _docs("a", "b", "c")
+        malformed: list[Any] = [
             None,  # structured chain produced nothing
             _result(),  # incomplete: 0 of 3 scored
             _result((1, 9)),  # incomplete: 1 of 3 scored
@@ -125,26 +111,15 @@ class TestRerankFailOpen:
             _result((1, 9), (1, 8), (2, 7)),  # duplicate id collapses short
             _result((1, float("nan")), (2, 8), (3, 7)),  # non-finite score
             _result((1, float("inf")), (2, 8), (3, 7)),  # non-finite score
-        ],
-    )
-    def test_malformed_results_keep_order(
-        self, monkeypatch: pytest.MonkeyPatch, result: Any
-    ) -> None:
-        docs = _docs("a", "b", "c")
-        _install(monkeypatch, _FakeScorer(result=result))
-        assert rerank("q", docs, k=2) == docs[:2]
-
-    @pytest.mark.parametrize(
-        "error",
-        [
+        ]
+        for result in malformed:
+            _install(monkeypatch, _FakeScorer(result=result))
+            assert rerank("q", docs, k=2) == docs[:2]
+        errors: list[Exception] = [
             ConnectionError("ollama down"),
             TimeoutError("rerank call timed out"),
             ValueError("model output does not match the schema"),
-        ],
-    )
-    def test_llm_errors_keep_order(
-        self, monkeypatch: pytest.MonkeyPatch, error: Exception
-    ) -> None:
-        docs = _docs("a", "b", "c")
-        _install(monkeypatch, _FakeScorer(error=error))
-        assert rerank("q", docs, k=2) == docs[:2]
+        ]
+        for error in errors:
+            _install(monkeypatch, _FakeScorer(error=error))
+            assert rerank("q", docs, k=2) == docs[:2]

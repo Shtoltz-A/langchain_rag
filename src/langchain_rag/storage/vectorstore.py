@@ -1,12 +1,19 @@
-"""Vector store access: Chroma persistence and embedding model construction.
+"""Vector store access: Chroma persistence, embedding model construction, and
+the janitor that sweeps segment directories a collection reset leaves behind.
 
-The only place that builds the embeddings model or touches ``langchain_chroma``.
-`app.py` orchestrates the pipeline; this module owns the store as a singleton
-class — one persisted collection per process, built lazily on first use.
+The only place that builds the embeddings model or touches ``langchain_chroma``
+— or the on-disk layout behind it. `services/indexing.py` orchestrates the
+pipeline; this
+module owns the store as a singleton class — one persisted collection per
+process, built lazily on first use.
 """
 
 from __future__ import annotations
 
+import shutil
+import sqlite3
+import uuid
+from pathlib import Path
 from typing import ClassVar, Self
 
 from langchain_chroma import Chroma
@@ -14,9 +21,75 @@ from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 
 from ..config import PROJECT_ROOT, get_settings
+from ..console import get_console
 
 COLLECTION_NAME = "documents"
 PERSIST_SUBDIR = "data/chroma"
+SQLITE_FILENAME = "chroma.sqlite3"
+
+
+def prune_orphan_segment_dirs(chroma_dir: Path | None = None) -> int:
+    """Delete persisted segment directories the Chroma database no longer knows.
+
+    ``reset_collection()`` assigns fresh segment ids but chromadb 1.5.9 never
+    deletes the old HNSW directories from the persist dir (rag-decisions.md),
+    so every collection wipe leaks one folder per vector segment. This janitor
+    removes only what the database provably no longer references: direct
+    sub-directories whose names are UUIDs absent from both the ``segments``
+    and ``collections`` id columns. Files (the sqlite DB itself, a transient
+    ``-journal``) and non-UUID directories are never touched, and every
+    failure path fails safe (skip, never raise) — janitorial work must not
+    break the wipe it follows.
+
+    Args:
+        chroma_dir: persist directory to sweep; defaults to the app's Chroma
+            dir, resolved at call time so tests can redirect it.
+
+    Returns:
+        Number of orphan directories deleted.
+    """
+    c = get_console()
+    directory = PROJECT_ROOT / PERSIST_SUBDIR if chroma_dir is None else chroma_dir
+    db = directory / SQLITE_FILENAME
+    live: set[str] = set()
+    try:
+        # Read-only connection: chroma's local DB runs in rollback-journal
+        # mode, so the freshly committed post-reset state is immediately
+        # visible and readers can never block the (same-thread) writer.
+        connection = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True)
+        try:
+            for table in ("segments", "collections"):
+                live.update(
+                    str(row_id).lower()
+                    for (row_id,) in connection.execute(f"select id from {table}")
+                )
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        # Missing/corrupt/locked DB: orphan status is unprovable — touch nothing.
+        c.debug(f"Segment-dir sweep skipped: {exc}")
+        return 0
+
+    pruned = 0
+    try:
+        children = list(directory.iterdir())
+    except OSError as exc:
+        c.debug(f"Segment-dir sweep skipped: {exc}")
+        return 0
+    for child in children:
+        if not child.is_dir() or child.name.lower() in live:
+            continue  # files and live dirs are untouchable by design
+        try:
+            uuid.UUID(child.name)
+        except ValueError:
+            continue  # not a Chroma segment directory — not ours to judge
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:  # e.g. a Windows lock — leave it for the next wipe
+            c.debug(f"Could not prune stale segment dir {child.name}: {exc}")
+            continue
+        pruned += 1
+    return pruned
 
 
 class VectorStore:
@@ -50,7 +123,7 @@ class VectorStore:
             instance._chroma = Chroma(
                 collection_name=COLLECTION_NAME,
                 embedding_function=OllamaEmbeddings(
-                    model=get_settings().OLLAMA_EMBEDDING_MODEL
+                    model=get_settings().ollama_embedding_model
                 ),
                 persist_directory=str(PROJECT_ROOT / PERSIST_SUBDIR),
             )
@@ -62,9 +135,18 @@ class VectorStore:
         """The underlying LangChain Chroma wrapper (escape hatch)."""
         return self._chroma
 
-    def clear(self) -> None:
-        """Delete and recreate the collection (full-rebuild entry point)."""
+    def clear(self) -> int:
+        """Delete and recreate the collection, then sweep leaked segment dirs.
+
+        chromadb never removes the old HNSW directories on a collection reset
+        (rag-decisions.md), so the janitor runs here — the module's only wipe
+        seam — rather than at each call site that could forget it.
+
+        Returns:
+            Number of stale segment directories pruned along the way.
+        """
         self._chroma.reset_collection()
+        return prune_orphan_segment_dirs()
 
     def add_documents(self, documents: list[Document]) -> None:
         """Embed and store chunks (append — delete first when replacing a file)."""

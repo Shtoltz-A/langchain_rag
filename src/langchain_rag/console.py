@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import textwrap
 import time
 
@@ -67,8 +68,18 @@ class Console:
         Use cases:
             - Centralize terminal writes.
             - Keep color handling consistent across all methods.
+
+        Streams whose encoding cannot represent our glyphs (piping into a
+        cp1252 file on Windows hits ``✓``) get ``?`` replacements instead of
+        a UnicodeEncodeError crash mid-run.
         """
-        typer.echo(message, err=err, color=self.color)
+        try:
+            typer.echo(message, err=err, color=self.color)
+        except UnicodeEncodeError:
+            stream = sys.stderr if err else sys.stdout
+            encoding = getattr(stream, "encoding", None) or "ascii"
+            safe = message.encode(encoding, errors="replace").decode(encoding)
+            typer.echo(safe, err=err, color=self.color)
 
     def log(
         self,
@@ -158,6 +169,27 @@ class Console:
         """
         if self.verbose:
             self.log(message, level="DEBUG")
+
+    def trace(self, label: str, *parts: str, ok: bool = False) -> None:
+        """Print a styled stage-summary line only when verbose mode is on.
+
+        Stage reporting gets its own voice instead of drowning in the gray
+        ``[DEBUG]`` stream: dim timestamp, cyan ``›`` (green ``✓`` when *ok*
+        marks a completed stage), bold label, then the plain *parts* joined
+        by ``·``. Callers pass plain strings — all styling stays inside the
+        console, so no module outside this one needs Typer.
+
+        Use cases:
+            - One line per indexed file: ``c.trace(rel_path, "2 chunks", "2.5s", ok=True)``.
+            - Pipeline stage summaries: ``c.trace("vector", "9/9 candidates", "0.4s")``.
+        """
+        if not self.verbose:
+            return
+        timestamp = typer.style(self._elapsed(), dim=True)
+        color = typer.colors.GREEN if ok else typer.colors.CYAN
+        icon = typer.style("✓" if ok else "›", fg=color, bold=True)
+        line = " · ".join((typer.style(label, bold=True), *parts))
+        self._echo(f"{timestamp} {icon} {line}")
 
     def banner(self, title: str) -> None:
         """Print a prominent heading surrounded by horizontal rules.

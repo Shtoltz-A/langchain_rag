@@ -5,6 +5,10 @@ build/
 dist/
 wheels/
 *.egg-info
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Virtual environments
 .venv
@@ -14,3 +18,4 @@ data/raw
 data/chroma
 data/test_data
 data/index_manifest.json
+data/chunk_summaries.json
