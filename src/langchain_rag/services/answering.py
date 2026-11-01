@@ -20,7 +20,7 @@ c = get_console()
 
 
 def answer(question: str) -> str:
-    """Retrieve relevant chunks (Step 4 pipeline) and answer using their contents."""
+    """Retrieve relevant chunks and answer using their contents."""
     relevant = retrieve(question)
 
     if not relevant:
@@ -39,7 +39,9 @@ def answer(question: str) -> str:
 
     messages = [
         ("system", ANSWER_SYSTEM_PROMPT),
-        ("human", f"Context:\n{context}\n\nQuestion: {question}"),
+        # Delimiters mark the untrusted region so indexed text cannot forge a
+        # "Question:" line and pose as the real query (anti-injection rule).
+        ("human", f"<context>\n{context}\n</context>\n\nQuestion:\n{question}"),
     ]
     response = traced_invoke(
         "answer", describe_answer_backend(), get_answer_llm(), messages

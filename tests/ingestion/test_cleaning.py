@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
+from langchain_rag.config import Settings
+from langchain_rag.ingestion import cleaning
 from langchain_rag.ingestion.cleaning import (
     apply_context_prefixes,
     normalize_documents,
@@ -87,14 +89,25 @@ def test_disabled_cleaning_passes_documents_through(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cleaning_enabled=False: neither stage touches the documents."""
-    monkeypatch.setattr(
-        "langchain_rag.ingestion.cleaning._settings.cleaning_enabled", False
-    )
+    settings = Settings().model_copy(update={"cleaning_enabled": False})
+    monkeypatch.setattr(cleaning, "get_settings", lambda: settings)
     assert (
         normalize_documents([_doc("a\n\n\n\nb   ", ".pdf", page=0)])[0].page_content
         == "a\n\n\n\nb   "
     )
     assert _prefixed(_doc("body", ".txt")) == "body"
+
+
+def test_stages_reread_settings_on_every_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Settings come from get_settings() at call time, not from import time."""
+    doc = _doc("a\n\n\n\nb   ", ".txt")
+    assert normalize_documents([doc])[0].page_content == "a\n\nb"
+
+    settings = Settings().model_copy(update={"cleaning_enabled": False})
+    monkeypatch.setattr(cleaning, "get_settings", lambda: settings)
+    assert normalize_documents([doc])[0].page_content == "a\n\n\n\nb   "
 
 
 def test_context_prefix_follows_the_file_type() -> None:

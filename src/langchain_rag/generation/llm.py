@@ -1,4 +1,4 @@
-"""Chat-model construction and invocation tracing (Step 4.1/4.2).
+"""Chat-model construction and invocation tracing.
 
 Every chat client in the app is built here (conventions.md): the answer path
 and the rerank path read their own ``*_provider``/model settings, so switching

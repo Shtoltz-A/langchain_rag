@@ -1,4 +1,4 @@
-"""Optional relevance refinement: LLM reranking of retrieved candidates (Step 4).
+"""Optional relevance refinement: LLM reranking of retrieved candidates.
 
 One listwise scoring call per query, not one per chunk: a single prompt lets
 the model compare candidates against each other and bounds per-query latency
@@ -146,9 +146,15 @@ def _score(question: str, candidates: list[Document]) -> dict[int, float] | None
                 raise ValueError(f"score for unknown document {item.id}")
             if not math.isfinite(item.score):
                 raise ValueError(f"non-finite score for document {item.id}")
+            index = item.id - 1
+            # A duplicate must fail loudly: silently overwriting the first
+            # score can still leave one entry per candidate, so the length
+            # check below would never notice (e.g. ids 1,1,2,3 for 3 docs).
+            if index in scores:
+                raise ValueError(f"duplicate score for document {item.id}")
             # Clamp, don't reject: a small model overshooting 0-10 must not
             # throw away the whole ranking.
-            scores[item.id - 1] = min(max(item.score, 0.0), 10.0)
+            scores[index] = min(max(item.score, 0.0), 10.0)
         if len(scores) != len(candidates):
             raise ValueError(f"scored {len(scores)} of {len(candidates)} documents")
         return scores

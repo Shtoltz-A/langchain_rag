@@ -16,30 +16,30 @@ from langchain_rag.generation.llm import build_chat_model, describe_model, resol
 
 def _settings(**overrides: Any) -> SimpleNamespace:
     """Settings surface generation.llm actually touches."""
-    base: dict[str, Any] = dict(
-        ollama_llm_model="llama-test",
-        llm_provider="ollama",
-        llm_model=None,
-        rerank_provider="ollama",
-        rerank_model=None,
-        openai_model="",
-        openai_base_url="",
-        openai_api_key=None,
-        rerank_num_ctx=16_384,
-        rerank_timeout=120.0,
-        contextual_provider="ollama",
-        contextual_model=None,
-        contextual_timeout=60.0,
-    )
+    base: dict[str, Any] = {
+        "ollama_llm_model": "llama-test",
+        "llm_provider": "ollama",
+        "llm_model": None,
+        "rerank_provider": "ollama",
+        "rerank_model": None,
+        "openai_model": "",
+        "openai_base_url": "",
+        "openai_api_key": None,
+        "rerank_num_ctx": 16_384,
+        "rerank_timeout": 120.0,
+        "contextual_provider": "ollama",
+        "contextual_model": None,
+        "contextual_timeout": 60.0,
+    }
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
-_GATEWAY: dict[str, Any] = dict(
-    openai_model="gw-model",
-    openai_base_url="https://gateway.test/v1",
-    openai_api_key=SecretStr("k"),
-)
+_GATEWAY: dict[str, Any] = {
+    "openai_model": "gw-model",
+    "openai_base_url": "https://gateway.test/v1",
+    "openai_api_key": SecretStr("k"),
+}
 
 
 def test_build_chat_model_forwards_provider_specific_kwargs() -> None:

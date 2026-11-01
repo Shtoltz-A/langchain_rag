@@ -21,12 +21,18 @@ from langchain_rag.storage.manifest import Manifest, root_key
 
 
 class _FakeVectorStore:
-    """Stands in for VectorStore: records every call, serves a canned count."""
+    """Stands in for VectorStore: records every call, serves a canned count.
+
+    ``owned`` seeds how many chunks each source contributes, so
+    ``delete_by_source`` can shrink the count like the real store — the
+    manifest-vs-store consistency tests compare against that.
+    """
 
     def __init__(self, count: int = 0, pruned: int = 0) -> None:
         self.calls: list[tuple] = []
         self._count = count
         self._pruned = pruned
+        self.owned: dict[str, int] = {}
 
     def clear(self) -> int:
         self.calls.append(("clear",))
@@ -39,6 +45,7 @@ class _FakeVectorStore:
 
     def delete_by_source(self, source: str) -> None:
         self.calls.append(("delete_by_source", source))
+        self._count -= self.owned.pop(source, 0)
 
     def search(self, query: str, k: int) -> list[Any]:
         self.calls.append(("search", query, k))
@@ -105,7 +112,7 @@ def _install(
         chunks_per_file: chunk count ``process_file()`` yields per file.
 
     Returns:
-        The shared fake store (Step 5 recorder on ``.contextual``) plus a
+        The shared fake store (recorder on ``.contextual``) plus a
         snapshot of every saved manifest.
     """
     store = _FakeVectorStore(count=store_count)
@@ -375,7 +382,7 @@ class TestOverlappingRoots:
 
 
 class TestContextualStage:
-    """Step 5 seam: the indexing service delegates chunks to the summarizer."""
+    """Seam: the indexing service delegates chunks to the summarizer."""
 
     def test_wiring_per_file_failure_and_config_abort(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -458,3 +465,228 @@ class TestContextualStage:
             index(root)
 
         assert store.calls == []  # the fake store never even saw ("clear",)
+
+
+class TestManifestStoreConsistency:
+    """Manifest and store must never diverge, or the count gate wipes all roots.
+
+    A record whose vectors the store no longer holds makes
+    ``_invalidation_reason`` claim a hand-wiped store, so every
+    ``delete_by_source`` has to be paired with the matching
+    ``manifest.remove`` — and persisted, whatever the re-add does next.
+    """
+
+    def test_failed_reindex_keeps_manifest_in_step_with_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A changed file whose summarizer dies leaves no phantom chunks."""
+        root = _root(tmp_path, "drift")
+        stale = root / "stale.txt"
+        manifest = _manifest_with(root, {str(stale): ("sha-old", 2)})
+        store, saved = _install(
+            monkeypatch,
+            manifest=manifest,
+            store_count=2,
+            files={root: [stale]},
+            hashes={stale: "sha-new"},
+            chunks_per_file=2,
+        )
+        store.owned[str(stale)] = 2  # the fake deletes the chunks it owns
+
+        def broken_contextual(chunks: list[Any]) -> list[Any]:
+            raise ContextualGenerationError("summarizer down")
+
+        monkeypatch.setattr(
+            indexing_mod, "apply_contextual_summaries", broken_contextual
+        )
+
+        result = index(root)
+
+        assert store.calls == [("delete_by_source", str(stale))]
+        assert result == IndexResult(
+            chunks_stored=0, files_indexed=0, files_unchanged=0, files_deleted=0
+        )
+        # Stale vectors gone AND the persisted manifest in sync: the count
+        # gate sees a healthy index, not a hand-wiped store.
+        assert store.count() == 0 == saved[-1].total_chunks()
+        assert (
+            _invalidation_reason(
+                manifest=saved[-1], fingerprint="fp", store_count=store.count()
+            )
+            is None
+        )
+
+        # With the summarizer recovered the file is rebuilt whole: the failed
+        # run left no record, so it came back as "added", never "unchanged".
+        monkeypatch.setattr(
+            indexing_mod, "apply_contextual_summaries", lambda chunks: chunks
+        )
+
+        result = index(root)
+
+        assert result == IndexResult(chunks_stored=2, files_indexed=1)
+        assert ("clear",) not in store.calls  # second run still trusts the store
+        assert saved[-1].sources_for(root)[str(stale)].sha256 == "sha-new"
+        assert saved[-1].total_chunks() == store.count()
+
+    def test_zero_chunk_reindex_keeps_manifest_in_step_with_store(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A changed file that re-parses to nothing drops its old chunks too."""
+        root = _root(tmp_path, "empty")
+        shrunk = root / "shrunk.txt"  # e.g. emptied out since the last index
+        manifest = _manifest_with(root, {str(shrunk): ("sha-old", 3)})
+        store, saved = _install(
+            monkeypatch,
+            manifest=manifest,
+            store_count=3,
+            files={root: [shrunk]},
+            hashes={shrunk: "sha-new"},
+            chunks_per_file=0,
+        )
+        store.owned[str(shrunk)] = 3
+
+        result = index(root)
+
+        assert store.calls == [("delete_by_source", str(shrunk))]
+        assert result == IndexResult(
+            chunks_stored=0, files_indexed=0, files_unchanged=0, files_deleted=0
+        )
+        assert store.count() == 0 == saved[-1].total_chunks()
+        assert (
+            _invalidation_reason(
+                manifest=saved[-1], fingerprint="fp", store_count=store.count()
+            )
+            is None
+        )
+
+    def test_deleted_file_record_dropped_before_any_later_save(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No persisted snapshot ever counts a deleted file's gone vectors."""
+        root = _root(tmp_path, "mixed")
+        keep = root / "keep.txt"
+        gone = root / "gone.txt"
+        new = root / "new.txt"
+        manifest = Manifest(fingerprint="fp", roots={})
+        manifest.record(root, str(gone), "sha-gone", 3)
+        manifest.record(root, str(keep), "sha-keep", 2)
+        store, saved = _install(
+            monkeypatch,
+            manifest=manifest,
+            store_count=5,
+            files={root: [keep, new]},
+            hashes={keep: "sha-keep", new: "sha-new"},
+            chunks_per_file=1,
+        )
+        store.owned.update({str(gone): 3, str(keep): 2})
+
+        result = index(root)
+
+        assert result == IndexResult(
+            chunks_stored=1, files_indexed=1, files_unchanged=1, files_deleted=1
+        )
+        # The first save (right after the delete loop) already dropped it,
+        # even though the new file's save lands later.
+        assert set(saved[0].sources_for(root)) == {str(keep)}
+        assert saved[0].total_chunks() == 2
+        assert set(saved[-1].sources_for(root)) == {str(keep), str(new)}
+        assert saved[-1].total_chunks() == store.count() == 3
+
+    def test_deletions_persist_without_any_reindex(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A delete-only run still reaches disk: nothing else would save."""
+        root = _root(tmp_path, "purge")
+        gone = root / "gone.txt"
+        manifest = _manifest_with(root, {str(gone): ("sha-gone", 3)})
+        store, saved = _install(
+            monkeypatch,
+            manifest=manifest,
+            store_count=3,
+            files={root: []},
+            hashes={},
+        )
+        store.owned[str(gone)] = 3
+
+        result = index(root)
+
+        assert store.calls == [("delete_by_source", str(gone))]
+        assert result == IndexResult(chunks_stored=0, files_deleted=1)
+        assert saved, "the deletion had to be persisted without any re-add"
+        assert saved[-1].roots == {}  # last record gone -> root pruned
+        assert store.count() == 0 == saved[-1].total_chunks()
+
+
+class TestUnreadableFiles:
+    """hash_file() failures are per-file events, never a whole-run abort."""
+
+    def test_locked_tracked_file_keeps_record_and_vectors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = _root(tmp_path, "locked")
+        locked = root / "locked.txt"
+        fresh = root / "fresh.txt"
+        hashes = {fresh: "sha-new"}
+        manifest = _manifest_with(root, {str(locked): ("sha-old", 2)})
+        store, saved = _install(
+            monkeypatch,
+            manifest=manifest,
+            store_count=2,
+            files={root: [locked, fresh]},
+            hashes=hashes,
+            chunks_per_file=1,
+        )
+
+        def flaky_hash(path: Path) -> str:
+            if path == locked:
+                raise PermissionError(32, "another process is using the file")
+            return hashes[path]
+
+        monkeypatch.setattr(indexing_mod, "hash_file", flaky_hash)
+
+        result = index(root)
+
+        # A transient lock is not a deletion: the tracked file keeps its
+        # digest, record and vectors, and its siblings still get indexed.
+        assert result == IndexResult(
+            chunks_stored=1, files_indexed=1, files_unchanged=1, files_deleted=0
+        )
+        assert ("delete_by_source", str(locked)) not in store.calls
+        record = saved[-1].sources_for(root)[str(locked)]
+        assert (record.sha256, record.chunks) == ("sha-old", 2)
+        assert str(locked) in capsys.readouterr().err  # the keep was warned
+
+    def test_locked_untracked_file_is_skipped(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = _root(tmp_path, "skipped")
+        locked = root / "locked.txt"
+        good = root / "good.txt"
+        hashes = {good: "sha-good"}
+        _, saved = _install(
+            monkeypatch,
+            manifest=Manifest(fingerprint="fp", roots={}),
+            files={root: [locked, good]},
+            hashes=hashes,
+            chunks_per_file=1,
+        )
+
+        def flaky_hash(path: Path) -> str:
+            if path == locked:
+                raise OSError(22, "Invalid argument")
+            return hashes[path]
+
+        monkeypatch.setattr(indexing_mod, "hash_file", flaky_hash)
+
+        result = _update_root(root, Manifest(fingerprint="fp", roots={}))
+
+        assert result == IndexResult(chunks_stored=1, files_indexed=1)
+        assert set(saved[-1].sources_for(root)) == {str(good)}
+        assert str(locked) in capsys.readouterr().err  # the skip was warned

@@ -1,4 +1,4 @@
-"""Chunk-summary cache: reusable one-sentence LLM contexts (Step 5).
+"""Chunk-summary cache: reusable one-sentence LLM contexts.
 
 Contextual retrieval spends one LLM call per chunk per *content*; this cache
 makes that cost pay once across index runs. Entries are keyed by the SHA-256
@@ -23,8 +23,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from ..config import PROJECT_ROOT
 

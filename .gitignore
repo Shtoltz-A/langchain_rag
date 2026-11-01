@@ -14,6 +14,11 @@ coverage.xml
 .venv
 .env
 
+# Tooling caches / editor state
+.idea/
+.pytest_cache/
+.ruff_cache/
+
 data/raw
 data/chroma
 data/test_data

@@ -1,4 +1,4 @@
-"""Unit tests for ingestion.contextual (Step 5: no Ollama, no network)."""
+"""Unit tests for ingestion.contextual (no Ollama, no network)."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ from langchain_rag.storage.summary_cache import (
 def _settings(**overrides: Any) -> Settings:
     """Real Settings with every contextual_* input the cache key hashes
     pinned explicitly, so a developer `.env` cannot shift prompt or key shape."""
-    base: dict[str, Any] = dict(
-        contextual_retrieval_enabled=True,
-        contextual_provider="ollama",
-        contextual_model="sum-m",
-        contextual_source_max_chars=3_000,
-    )
+    base: dict[str, Any] = {
+        "contextual_retrieval_enabled": True,
+        "contextual_provider": "ollama",
+        "contextual_model": "sum-m",
+        "contextual_source_max_chars": 3_000,
+    }
     base.update(overrides)
     return Settings(**base)
 

@@ -2,28 +2,37 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from ollama import Client
+from ollama import Client, RequestError, ResponseError
 
 from .app import (
     answer as answer_question,
+)
+from .app import (
     clear_index,
+)
+from .app import (
     index as index_documents,
 )
 from .config import PROJECT_ROOT
 from .console import get_console
 
-
-def _ensure_ollama_running() -> None:
-    try:
-        Client().list()
-    except ConnectionError:
-        raise typer.Exit(
-            "Error: Ollama is not reachable. Start it with `ollama serve`."
-        )
-
-
 app = typer.Typer(help="Index documents and query them with RAG.")
 c = get_console()
+
+
+def _ensure_ollama_running() -> None:
+    """Abort the run unless the Ollama daemon answers ``list``.
+
+    Covers more than a refused connection: ``ResponseError``/``RequestError``
+    surface a daemon that is up but erroring, so both end the run with a
+    Console error instead of a raw traceback.
+    """
+    try:
+        Client().list()
+    except (ConnectionError, RequestError, ResponseError) as exc:
+        c.error("Ollama is not reachable. Start it with `ollama serve`.")
+        c.debug(f"Ollama client error: {exc}")
+        raise typer.Exit(code=1)
 
 
 @app.callback()
@@ -53,7 +62,6 @@ def index(
         PROJECT_ROOT / "data/raw",
         "--directory",
         "-d",
-        exists=True,
         file_okay=False,
         readable=True,
     ),
@@ -65,6 +73,11 @@ def index(
     ),
 ) -> None:
     """Build and persist the document index (incremental per folder)."""
+    # Existence is validated here, not by Click: `--clear` never reads the
+    # directory, so clearing must work even after data/raw is gone.
+    if not clear and not directory.exists():
+        c.error(f"Directory '{directory}' does not exist.")
+        raise typer.Exit(code=1)
     _ensure_ollama_running()
     if clear:
         result = clear_index()

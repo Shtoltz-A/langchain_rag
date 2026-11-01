@@ -9,9 +9,9 @@ Two pure, unit-testable stages wrap the loader→chunking pipeline:
         one prefix derived from metadata, e.g. "[Doc: pdf/Policy.pdf p.12]"
         or "[File: ops/runbook.md > Deployment]" (folder trail included).
 
-Neither mutates its input Documents; both return new lists. Contextual
-retrieval (LLM per-chunk summaries) is deliberately out of scope here
-(roadmap Step 4).
+Neither mutates its input Documents; both return new lists. The LLM-backed
+contextual retrieval (per-chunk summaries) is a separate stage of its own, in
+``contextual.py``; this module stays LLM-free.
 """
 
 from __future__ import annotations
@@ -23,9 +23,7 @@ from typing import ClassVar
 
 from langchain_core.documents import Document
 
-from ..config import Settings, get_settings
-
-_settings: Settings = get_settings()
+from ..config import get_settings
 
 _TRAILING_WS = re.compile(r"[ \t]+$", re.MULTILINE)
 _BLANK_RUN = re.compile(r"\n{3,}")
@@ -101,7 +99,7 @@ def _normalize_text(text: str) -> str:
 
 
 def normalize_documents(documents: list[Document]) -> list[Document]:
-    """Normalize extracted text in place for each document (before chunking).
+    """Normalize the extracted text of every document (before chunking).
 
     Args:
         documents: Loader-produced Documents.
@@ -112,10 +110,11 @@ def normalize_documents(documents: list[Document]) -> list[Document]:
     Collapses blank-line runs and trailing whitespace for every document;
     rejoins hyphen-broken words and drops repeated headers/footers only for
     PDF sources (guarded so markdown `code-block` hyphens aren't mangled).
+    Returns new Documents; the inputs are left untouched.
     """
     if not documents:
         return []
-    if not _settings.cleaning_enabled:
+    if not get_settings().cleaning_enabled:
         return list(documents)
 
     # First pass: per-document hygiene (+ PDF hyphenation). Boilerplate
@@ -181,7 +180,7 @@ def apply_context_prefixes(chunks: list[Document]) -> list[Document]:
     unchanged (no double-prefixing). Structured metadata is left intact
     alongside the prefix. Disabled when cleaning_enabled is False.
     """
-    if not chunks or not _settings.cleaning_enabled:
+    if not chunks or not get_settings().cleaning_enabled:
         return list(chunks)
     result: list[Document] = []
     for chunk in chunks:

@@ -105,6 +105,33 @@ def test_save_load_delete_round_trip(tmp_path: Path) -> None:
     assert delete_manifest(path) is False  # already-missing file is tolerated
 
 
+def test_delete_manifest_swallows_unremovable_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every unlink failure is swallowed like an absent file (True only on a
+    real delete). clear_index() calls this AFTER wiping the store, so raising
+    here would leave vectors gone + manifest alive; a surviving manifest
+    self-heals via the rebuild gates instead."""
+    missing = tmp_path / "missing.json"
+    assert delete_manifest(missing) is False  # FileNotFoundError stays silent
+
+    present = tmp_path / "index_manifest.json"
+    present.write_text("{}", encoding="utf-8")
+
+    def _locked(*args: object, **kwargs: object) -> None:
+        raise PermissionError(32, "another process is using the file")
+
+    monkeypatch.setattr(Path, "unlink", _locked)
+    assert delete_manifest(present) is False  # e.g. held open by an editor
+    assert present.exists()  # swallowed, not raised: the caller moves on
+
+    def _is_a_directory(*args: object, **kwargs: object) -> None:
+        raise IsADirectoryError(21, "Is a directory")
+
+    monkeypatch.setattr(Path, "unlink", _is_a_directory)
+    assert delete_manifest(present) is False
+
+
 def test_load_manifest_unusable_returns_none(tmp_path: Path) -> None:
     """Every structurally unusable file yields None (caller rebuilds)."""
     assert load_manifest(tmp_path / "nope.json") is None  # missing (OSError)

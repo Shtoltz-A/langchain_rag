@@ -87,11 +87,11 @@ class BM25Index:
 
     def __init__(self, corpus: list[Document]) -> None:
         self._corpus = corpus
-        self._bm25 = (
-            BM25Okapi([_tokenize(doc.page_content) for doc in corpus])
-            if corpus
-            else None
-        )
+        tokenized = [_tokenize(doc.page_content) for doc in corpus]
+        # rank_bm25 divides by avgdl: an all-empty tokenization makes it 0
+        # (zero-division → nan scores). No tokens anywhere also means no
+        # keyword signal, so leave the index unbuilt and let search() return [].
+        self._bm25 = BM25Okapi(tokenized) if any(tokenized) else None
 
     def search(self, query: str, k: int) -> Ranking:
         """Top-k chunks scoring above zero, best first; ties keep corpus order.
@@ -128,7 +128,8 @@ def rrf_fuse(
 
     Args:
         rankings: one ranked document list per retriever, best first.
-        weights: per-list influence, parallel to ``rankings``.
+        weights: per-list influence, parallel to ``rankings``; a list weighted
+            ``0.0`` is skipped entirely and contributes no documents.
         c: damping constant; larger ``c`` flattens rank differences.
         top_n: optional cutoff for the fused list (fusing two k-lists can
             otherwise return up to 2k documents).
@@ -146,6 +147,8 @@ def rrf_fuse(
     scores: dict[str, float] = defaultdict(float)
     seen: dict[str, Document] = {}
     for ranked, weight in zip(rankings, weights, strict=True):
+        if weight == 0.0:
+            continue  # even at score 0.0 these docs would pollute the result
         for rank, doc in enumerate(ranked):
             key = doc_key(doc)
             seen.setdefault(key, doc)

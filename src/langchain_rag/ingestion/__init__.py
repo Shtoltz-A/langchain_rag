@@ -1,10 +1,10 @@
 """Ingestion pipeline: turning source files into documents, chunks, and clean text.
 
-Sub-modules (filled progressively per roadmap Step 2):
+Sub-modules:
     loaders    — file-type loaders (.txt, .md, .pdf, .py, .json) producing Documents.
     cleaning   — normalization of extracted content.
     chunking   — per-content-type chunking strategies.
-    contextual — per-chunk LLM context summaries (Step 5); the only LLM-touching
+    contextual — per-chunk LLM context summaries; the only LLM-touching
         module here, applied by ``services/indexing`` *after*
         ``process_file()`` so that
         function stays LLM-free and batch-parity holds.
@@ -59,7 +59,7 @@ def process_file(path: Path, root: Path) -> list[Document]:
         # (chunks + time), so load/split counts would just repeat it.
         documents = loader(path, root=root).load()
         return apply_context_prefixes(split_documents(normalize_documents(documents)))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — per-file tolerance is the contract
         c.error(f"Failed to process {path}: {exc}")
         return []
 

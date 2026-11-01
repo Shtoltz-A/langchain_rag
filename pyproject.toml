@@ -1,7 +1,7 @@
 [project]
 name = "langchain-rag"
 version = "0.1.0"
-description = "Add your description here"
+description = "All-purpose RAG toolkit: multi-format ingestion, incremental Chroma indexing, hybrid retrieval with LLM reranking, and grounded CLI question answering."
 readme = "README.md"
 authors = [
     { name = "Andrii Dmytriiev", email = "andrii.dmytriiev.ext@orange.com" }
@@ -30,7 +30,18 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# Markdown carries prose and ASCII diagrams; only its fenced Python blocks
+# would be lintable, and the docs are hand-formatted on purpose.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer.Option(...) in argument defaults is Typer's documented idiom.
+"src/langchain_rag/cli.py" = ["B008"]

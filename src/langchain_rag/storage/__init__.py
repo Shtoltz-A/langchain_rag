@@ -1,5 +1,5 @@
 """Storage layer: vector store persistence, the index manifest, and the
-chunk-summary cache (Steps 3 + 5).
+chunk-summary cache.
 
 Sub-modules:
     vectorstore    — VectorStore singleton class (Chroma + embeddings, store/delete/search/count; clear sweeps leaked segment dirs).

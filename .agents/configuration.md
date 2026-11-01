@@ -20,9 +20,9 @@ All runtime settings live in `src/langchain_rag/config.py` as one pydantic-setti
 | `openai_base_url` | `str` | *(empty)* | ✓ | Gateway API root URL (`…/v1`); required when a path selects `openai` |
 | `openai_api_key` | `SecretStr \| None` | *(none)* | ✓ | Gateway key; an empty `openai_api_key=` counts as unset; never logged |
 | `retrieval_mode` | `Literal` | `vector` | ✓ | Candidate source: `vector`, `keyword` (BM25) or `hybrid` (RRF-fused) |
-| `top_k` | `int` | `5` | ✓ | Number of chunks retrieved per query |
+| `top_k` | `int` | `5` (min 1) | ✓ | Number of chunks retrieved per query |
 | `rerank_enabled` | `bool` | `false` | ✓ | Reorder over-fetched candidates with one listwise LLM call; fail-open on trouble |
-| `max_context_chars` | `int` | `12000` | no | Hard cap on the assembled context string before prompting |
+| `max_context_chars` | `int` | `12000` (min 1) | no | Hard cap on the assembled context string before prompting |
 | `rrf_c` | `int` | `60` | no | RRF damping constant: `score += weight / (rrf_c + rank)` |
 | `hybrid_vector_weight` | `float` | `0.5` | no | Influence of the vector ranking in hybrid fusion |
 | `hybrid_bm25_weight` | `float` | `0.5` | no | Influence of the BM25 ranking in hybrid fusion |

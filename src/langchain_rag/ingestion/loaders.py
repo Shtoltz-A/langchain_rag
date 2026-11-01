@@ -220,6 +220,6 @@ def load_documents(directory: Path) -> list[Document]:
             # Consume inside the guard: lazy_load is a generator, so file
             # errors (encoding, corrupt PDF) surface at consumption time.
             documents.extend(loader(file, root=directory).load())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — per-file tolerance is the contract
             c.error(f"Failed to load {file.relative_to(directory)}: {exc}")
     return documents

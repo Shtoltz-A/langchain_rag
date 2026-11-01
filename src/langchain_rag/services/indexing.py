@@ -186,11 +186,34 @@ def _file_label(path: Path, root: Path) -> str:
 def _update_root(root: Path, manifest: Manifest) -> IndexResult:
     """Re-embed one root's added/changed files; drop vectors of deleted ones.
 
+    Vector deletions and manifest-record removals stay paired step for step,
+    so the manifest never counts chunks the store has dropped — drift there
+    would trip the count-mismatch gate into wiping every root.
+
     Other roots are never scanned or modified: the diff only sees this root's
     records, so a new root arrives as "all added" on an untouched collection
     and a tracked root updates in place.
     """
-    current = {str(file): hash_file(file) for file in iter_supported_files(root)}
+    current: dict[str, str] = {}
+    for file in iter_supported_files(root):
+        try:
+            current[str(file)] = hash_file(file)
+        except OSError as exc:
+            # Per-file tolerance, like every load failure below: a locked or
+            # vanished file (routine on Windows) must not abort the run. A
+            # tracked file keeps its previous digest — a transient lock must
+            # not read as a deletion and drop its vectors — while an
+            # untracked one simply waits for a later run to read it.
+            tracked = manifest.sources_for(root).get(str(file))
+            if tracked is not None:
+                current[str(file)] = tracked.sha256
+                c.warning(
+                    f"Could not re-read {file}: {exc}. Keeping its indexed "
+                    "version; it counts as unchanged this run."
+                )
+            else:
+                c.warning(f"Skipping unreadable file {file}: {exc}.")
+
     if not current and not manifest.sources_for(root):
         # Nothing on disk, nothing tracked: only a fresh wipe needs persisting
         # so the empty store and manifest stay consistent.
@@ -207,10 +230,19 @@ def _update_root(root: Path, manifest: Manifest) -> IndexResult:
     )
 
     store = VectorStore()
-    for source in file_diff.deleted + file_diff.changed:
-        # Delete before re-add (or after removal from disk): stale vectors
-        # would otherwise linger beside the fresh ones.
-        store.delete_by_source(source)
+    if file_diff.deleted or file_diff.changed:
+        for source in file_diff.deleted + file_diff.changed:
+            # Delete before re-add (or after removal from disk): stale vectors
+            # would otherwise linger beside the fresh ones. The manifest
+            # record goes in the same breath — a changed file that fails to
+            # re-index then simply re-appears as "added" next run, and the
+            # manifest never counts chunks the store no longer holds.
+            store.delete_by_source(source)
+            manifest.remove(root, source)
+        # Persist the removals before any re-add: the per-file saves below
+        # only run for added/changed files, yet a delete-only run must not
+        # leave stale records (or worse, nothing saved) behind.
+        save_manifest(manifest)
 
     chunks_stored = 0
     files_indexed = 0
@@ -222,10 +254,6 @@ def _update_root(root: Path, manifest: Manifest) -> IndexResult:
             chunks_stored += stored
             files_indexed += 1
         save_manifest(manifest)  # persist per file: a crash resumes here
-
-    for source in file_diff.deleted:
-        manifest.remove(root, source)
-    save_manifest(manifest)
 
     return IndexResult(
         chunks_stored=chunks_stored,
@@ -252,13 +280,14 @@ def _index_file(
     Returns:
         Chunks stored (``0`` when the file yielded none), or ``None`` when
         the contextual summarizer failed — the caller then skips its
-        ``save_manifest`` for this file, as the pre-split ``continue`` did.
+        ``save_manifest`` for this file, and since its delete step already
+        dropped any old record, the file re-appears as "added" next run.
     """
     start = perf_counter()
     chunks = process_file(Path(source), root)
     if chunks:
         try:
-            # Step 5 stage: prepend cached/generated context sentences.
+            # Prepend the cached/generated context sentences.
             # ``process_file`` stays LLM-free — batch parity is preserved.
             chunks = apply_contextual_summaries(chunks)
         except ContextualGenerationError as exc:

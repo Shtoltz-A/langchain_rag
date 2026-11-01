@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import textwrap
 import time
+from typing import ClassVar
 
 import typer
 
@@ -18,7 +19,7 @@ class Console:
     Verbose mode enables debug messages and disables block truncation.
     """
 
-    LEVEL_COLORS = {
+    LEVEL_COLORS: ClassVar[dict[str, str]] = {
         "INFO": typer.colors.CYAN,
         "WARNING": typer.colors.YELLOW,
         "SUCCESS": typer.colors.GREEN,

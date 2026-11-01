@@ -166,7 +166,7 @@ class VectorStore:
         return self._chroma.similarity_search(question, k=k)
 
     def all_documents(self) -> list[Document]:
-        """Every stored chunk as ``Document``s (BM25 corpus building, Step 4).
+        """Every stored chunk as ``Document``s (BM25 corpus building).
 
         Vectors are excluded via ``include`` — they are the bulk of the
         response and keyword retrieval has no use for them.

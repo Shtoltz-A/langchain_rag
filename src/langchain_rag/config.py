@@ -78,9 +78,19 @@ class Settings(BaseSettings):
         default="vector",
         description="Candidate source: dense vectors, BM25 keywords, or RRF-fused hybrid",
     )
-    top_k: int = 5
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        description="Number of chunks retrieved per query (0 would silently "
+        "retrieve nothing)",
+    )
     rerank_enabled: bool = False
-    max_context_chars: int = 12_000
+    max_context_chars: int = Field(
+        default=12_000,
+        ge=1,
+        description="Hard cap on the assembled context string before "
+        "prompting (0 would silently empty it)",
+    )
     rrf_c: int = Field(
         default=60,
         ge=1,

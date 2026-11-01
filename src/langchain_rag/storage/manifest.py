@@ -176,7 +176,7 @@ def compute_fingerprint() -> str:
 
 
 def _contextual_fingerprint_payload(settings: Settings) -> dict:
-    """Fingerprint block for enabled contextual retrieval (Step 5).
+    """Fingerprint block for enabled contextual retrieval.
 
     Records the *resolved* summary model (via the shared
     ``config.fallback_chat_model``, so it is exactly the model
@@ -297,17 +297,25 @@ def save_manifest(manifest: Manifest, path: Path = MANIFEST_PATH) -> None:
 
 
 def delete_manifest(path: Path = MANIFEST_PATH) -> bool:
-    """Delete the manifest file; tolerant of an already-missing file.
+    """Delete the manifest file; tolerant of one that cannot be removed.
+
+    Runs *after* the vector store was wiped (``clear_index()``), so an
+    unremovable manifest must never abort that flow: every ``OSError``
+    (already missing, locked by another process, a stray directory in the
+    way) is swallowed here — this module stays Console-free. A surviving
+    manifest self-heals via the rebuild gates on the next run — most
+    directly the count-mismatch gate: it claims chunks a wiped store lacks.
 
     Args:
         path: manifest file location.
 
     Returns:
-        ``True`` when a file was actually deleted, ``False`` when absent.
+        ``True`` when a file was actually deleted, ``False`` when it was
+        absent or unlinking failed.
     """
     try:
         path.unlink()
-    except FileNotFoundError:
+    except OSError:
         return False
     return True
 

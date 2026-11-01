@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
-from langchain_rag.config import get_settings
+from langchain_rag.config import Settings, get_settings
+from langchain_rag.ingestion import chunking
 from langchain_rag.ingestion.chunking import (
     ChunkingStrategy,
     CodeChunker,
@@ -26,6 +27,11 @@ def _doc(text: str, suffix: str, **metadata: object) -> Document:
     return Document(
         page_content=text, metadata={"source": f"{SOURCE}{suffix}", **metadata}
     )
+
+
+def _doc_at(text: str, name: str) -> Document:
+    """Document with its own file name, for per-file failure tests."""
+    return Document(page_content=text, metadata={"source": str(Path(name))})
 
 
 def test_get_chunker_routes_by_suffix_with_text_fallback() -> None:
@@ -122,6 +128,87 @@ def test_markdown_chunker_respects_fences_headings_and_cap() -> None:
     assert all(_word_length(c.page_content) <= cap for c in chunks)
 
 
+def test_markdown_fences_match_like_commonmark() -> None:
+    """Longer fences swallow shorter ones; only a bare same-char run closes."""
+    # A ``` line inside a 4-backtick fence is content, so the heading-looking
+    # line after it is still code and must not open a section.
+    md = (
+        "# Guide\n\n"
+        + "intro " * 20
+        + "\n\n````markdown\n```python\n# not a heading\n```\n````\n\n"
+        + "prose after the fence " * 10
+    )
+    sections = MarkdownChunker._parse_sections(md)
+    assert all(headers.get("h1") == "Guide" for _, headers in sections)
+
+    # The oversized-fence machinery sees the same fence, too: it stays atomic.
+    fence_block = "````markdown\n```python\n# not a heading\n```\n````"
+    chunks = MarkdownChunker().split_documents([_doc(md, ".md")])
+    assert any(fence_block in c.page_content for c in chunks)
+
+    # A close line carrying an info string does not close: everything after it
+    # is still inside the fence, so "# still code" never becomes h1 metadata.
+    md = (
+        "intro prose " * 20
+        + "\n\n```python\nx = 1\n```python\n\n# still code\n\n"
+        + "trailing prose " * 20
+    )
+    sections = MarkdownChunker._parse_sections(md)
+    assert len(sections) == 1
+    assert all("h1" not in headers for _, headers in sections)
+
+    # Tilde and backtick fences are independent kinds, and a short run never
+    # closes a longer fence of its own kind.
+    md = "lead " * 20 + "\n\n~~~\na\n```\nb\n~~~\n\n# After\n\n" + "prose after " * 20
+    sections = MarkdownChunker._parse_sections(md)
+    assert [headers for _, headers in sections] == [{}, {"h1": "After"}]
+
+    md = "lead " * 20 + "\n\n~~~~\na\n~~~\nb\n~~~~\n\n# After\n\n" + "prose after " * 20
+    sections = MarkdownChunker._parse_sections(md)
+    assert [headers for _, headers in sections] == [{}, {"h1": "After"}]
+
+
+def test_markdown_headings_need_a_space_and_at_most_six_hashes() -> None:
+    """`#hashtag` and 7-hash runs stay prose; real headings still split."""
+    md = (
+        "#hashtag is not a heading\n\n"
+        + "word " * 20
+        + "\n####### neither is this\n\n"
+        + "more " * 20
+    )
+    sections = MarkdownChunker._parse_sections(md)
+    assert sections and all(not headers for _, headers in sections)
+
+    md = (
+        "# A\n\n"
+        + "body a " * 20
+        + "\n\n## B\n\n"
+        + "body b " * 20
+        + "\n\n#### Deep\n\n"
+        + "body c " * 20
+    )
+    sections = MarkdownChunker._parse_sections(md)
+    assert [headers for _, headers in sections] == [
+        {"h1": "A"},
+        {"h1": "A", "h2": "B"},
+    ]
+    assert "#### Deep" in sections[-1][0]  # deeper than h3 stays body-only
+
+
+def test_stub_merge_keeps_both_headings_of_a_level_collision() -> None:
+    """A stub `## API` joined to `## Commands` reports "API / Commands"."""
+    md = "# Guide\n\n" + "intro " * 20 + "\n\n## API\n\n## Commands\n\n" + "run " * 20
+    chunks = MarkdownChunker().split_documents([_doc(md, ".md")])
+    merged = next(c for c in chunks if "## API" in c.page_content)
+    assert merged.metadata["h2"] == "API / Commands"
+    assert merged.metadata["h1"] == "Guide"
+
+    # The same heading text on both sides is not duplicated.
+    md = "# Guide\n\n" + "intro " * 20 + "\n\n# Guide\n\n" + "again " * 3
+    sections = MarkdownChunker._parse_sections(md)
+    assert [headers for _, headers in sections] == [{"h1": "Guide"}]
+
+
 def test_code_and_json_strategies_split_on_structure() -> None:
     """Python prefers def boundaries; JSON splits per key and per oversized key."""
     src = "\n\n".join(
@@ -156,3 +243,47 @@ def test_empty_and_broken_documents_never_abort_the_run() -> None:
     chunks = split_documents([broken, good])
     assert chunks  # the good document survived the broken one
     assert all(_word_length(c.page_content) > 0 for c in chunks)
+
+
+def test_a_broken_file_costs_only_its_own_chunks(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Same-suffix siblings survive, and the error names the file that broke."""
+    broken = _doc_at("{ not valid json", "fake/dir/broken.json")
+    sibling = _doc_at('{"alpha": "a stored value"}', "fake/dir/sibling.json")
+    note = _doc_at("fine plain text content", "fake/dir/note.txt")
+
+    chunks = split_documents([sibling, broken, note])
+
+    # Only the broken file lost its chunks, and the survivors keep their order.
+    assert [Path(c.metadata["source"]).name for c in chunks] == [
+        "sibling.json",
+        "note.txt",
+    ]
+    err = capsys.readouterr().err
+    assert "broken.json" in err
+    assert "sibling.json" not in err
+
+
+def test_strategies_read_settings_when_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunk caps come from get_settings() at build time, not import time."""
+    assert (
+        len(
+            MarkdownChunker().split_documents(
+                [_doc("# Long\n\n" + " ".join(f"w{i}" for i in range(100)), ".md")]
+            )
+        )
+        == 1
+    )  # one chunk under the default cap
+
+    small = Settings().model_copy(
+        update={"chunk_size_markdown_words": 20, "chunk_overlap_markdown_words": 5}
+    )
+    monkeypatch.setattr(chunking, "get_settings", lambda: small)
+    chunks = MarkdownChunker().split_documents(
+        [_doc("# Long\n\n" + " ".join(f"w{i}" for i in range(100)), ".md")]
+    )
+    assert len(chunks) > 1
+    assert all(_word_length(c.page_content) <= 20 for c in chunks)

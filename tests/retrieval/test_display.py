@@ -35,7 +35,7 @@ class TestDocPreview:
             )
             == "Actual body."
         )
-        # Step 5 stacks its [Context: …] line on top of the cleaning prefix:
+        # Contextual retrieval stacks its [Context: …] line on top of the cleaning prefix:
         # the preview must strip the whole run of leading bracket lines.
         doc = _doc(
             "[Context: Greenhouse CO2 readings of Sol 512.]\n"

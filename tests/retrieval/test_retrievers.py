@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from types import SimpleNamespace
 from typing import Any
 
@@ -169,6 +170,14 @@ class TestRrfFuse:
         fused = rrf_fuse(rankings, weights, c=60, top_n=3)
         assert [d.page_content for d in fused] == ["a", "c", "b"]
 
+    def test_zero_weight_list_contributes_no_documents(self) -> None:
+        # A skipped list must not even donate its documents at score 0.0:
+        # only-b-in-the-zero-list means b is not part of the answer.
+        a, b = _doc("a"), _doc("b")
+        assert rrf_fuse([[a], [b]], [1.0, 0.0], c=60) == [a]
+        # With every list weighted zero, nothing is fused in at all.
+        assert rrf_fuse([[a, b]], [0.0], c=60) == []
+
 
 class TestBM25Index:
     def test_ranks_filters_and_respects_k_and_corpus_order(self) -> None:
@@ -212,6 +221,16 @@ class TestBM25Index:
         assert BM25Index(corpus).search("alpha", k=3) == corpus[:2]
         # rank_bm25 itself dies on an empty corpus; the index must not.
         assert BM25Index([]).search("anything", k=3) == []
+
+    def test_all_empty_tokenization_searches_empty_without_warning(self) -> None:
+        # Every document tokenizing to [] makes BM25Okapi's avgdl 0: the
+        # zero-division it would hit emits a RuntimeWarning and nan scores.
+        # simplefilter("error") turns any such warning into a test failure.
+        corpus = [_doc("!!! ???"), _doc("..."), _doc("   \n")]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            index = BM25Index(corpus)
+            assert index.search("anything", k=3) == []
 
 
 class TestRetrievePipeline:

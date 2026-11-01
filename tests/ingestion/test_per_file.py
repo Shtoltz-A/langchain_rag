@@ -1,6 +1,6 @@
 """Tests for per-file ingestion entry points: iter_supported_files, process_file.
 
-Step 3.2b: incremental indexing needs per-file enumeration and a single-file
+Incremental indexing needs per-file enumeration and a single-file
 pipeline whose output matches the batch chain file-for-file.
 """
 

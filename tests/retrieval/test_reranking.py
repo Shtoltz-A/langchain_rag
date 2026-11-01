@@ -109,6 +109,9 @@ class TestRerankFailOpen:
             _result((1, 9)),  # incomplete: 1 of 3 scored
             _result((1, 9), (2, 8), (9, 7)),  # id outside the candidate range
             _result((1, 9), (1, 8), (2, 7)),  # duplicate id collapses short
+            # Duplicate id plus an in-range extra: one entry per candidate,
+            # so only the explicit duplicate check can catch this.
+            _result((1, 9), (1, 8), (2, 7), (3, 6)),
             _result((1, float("nan")), (2, 8), (3, 7)),  # non-finite score
             _result((1, float("inf")), (2, 8), (3, 7)),  # non-finite score
         ]
